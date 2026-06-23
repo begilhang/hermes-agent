@@ -3,11 +3,14 @@ import { cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelInfo } from '@/hermes'
+import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
   $currentModel,
+  $currentModelProfile,
   $currentProvider,
   setCurrentModel,
+  setCurrentModelProfile,
   setCurrentProvider
 } from '@/store/session'
 
@@ -18,6 +21,7 @@ const notifyError = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: vi.fn(),
+  setApiRequestProfile: vi.fn(),
   setGlobalModel: (...args: Parameters<typeof setGlobalModel>) => setGlobalModel(...args)
 }))
 
@@ -60,7 +64,9 @@ function Harness({
 describe('useModelControls', () => {
   beforeEach(() => {
     $activeSessionId.set(null)
+    $activeGatewayProfile.set('default')
     setCurrentModel('')
+    setCurrentModelProfile('')
     setCurrentProvider('')
   })
 
@@ -68,7 +74,9 @@ describe('useModelControls', () => {
     cleanup()
     vi.restoreAllMocks()
     $activeSessionId.set(null)
+    $activeGatewayProfile.set('default')
     setCurrentModel('')
+    setCurrentModelProfile('')
     setCurrentProvider('')
   })
 
@@ -89,6 +97,7 @@ describe('useModelControls', () => {
     await result.current.refreshCurrentModel()
 
     expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect($currentModelProfile.get()).toBe('default')
     expect($currentProvider.get()).toBe('openai-codex')
   })
 
@@ -164,6 +173,7 @@ describe('useModelControls', () => {
     // The pick is plain UI state; session.create ships it later. Nothing touches
     // the gateway or the profile default here.
     expect($currentModel.get()).toBe('claude-sonnet-4.6')
+    expect($currentModelProfile.get()).toBe('default')
     expect($currentProvider.get()).toBe('anthropic')
     expect(requestGateway).not.toHaveBeenCalled()
     expect(setGlobalModel).not.toHaveBeenCalled()
@@ -183,10 +193,12 @@ describe('useModelControls', () => {
     // Empty → seeds the default.
     await result.current.refreshCurrentModel()
     expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect($currentModelProfile.get()).toBe('default')
 
     // A user pick must survive the lifecycle refreshes that fire on boot / fresh
     // draft / session events.
     setCurrentModel('anthropic/claude-sonnet-4.6')
+    setCurrentModelProfile('default')
     setCurrentProvider('anthropic')
     await result.current.refreshCurrentModel()
     expect($currentModel.get()).toBe('anthropic/claude-sonnet-4.6')
@@ -194,5 +206,6 @@ describe('useModelControls', () => {
     // A profile swap forces a reseed to the new profile's default.
     await result.current.refreshCurrentModel(true)
     expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect($currentModelProfile.get()).toBe('default')
   })
 })

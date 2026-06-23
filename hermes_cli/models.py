@@ -81,6 +81,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
     ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
     ("inclusionai/ring-2.6-1t:free",           "free"),
+    ("nex-agi/nex-n2-pro:free",                "free"),
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None

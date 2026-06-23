@@ -17,6 +17,7 @@ import {
   $currentCwd,
   $currentFastMode,
   $currentModel,
+  $currentModelProfile,
   $currentProvider,
   $currentReasoningEffort,
   $messages,
@@ -30,6 +31,7 @@ import {
   setCurrentCwd,
   setCurrentFastMode,
   setCurrentModel,
+  setCurrentModelProfile,
   setCurrentPersonality,
   setCurrentProvider,
   setCurrentReasoningEffort,
@@ -179,13 +181,14 @@ function upsertOptimisticSession(
   created: SessionCreateResponse,
   id: string,
   title: string | null = null,
-  preview: string | null = null
+  preview: string | null = null,
+  profile?: string | null
 ) {
   const now = Date.now() / 1000
   // Stamp the profile the session was just created on (= the live gateway's
   // profile) so the scoped sidebar shows the new row immediately instead of
   // filtering it out as "default" until the aggregator re-fetches.
-  const profileKey = normalizeProfileKey($activeGatewayProfile.get())
+  const profileKey = normalizeProfileKey(profile ?? $activeGatewayProfile.get())
 
   const session: SessionInfo = {
     cwd: created.info?.cwd ?? null,
@@ -311,6 +314,10 @@ function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionRuntimeS
 
   if (typeof info.model === 'string') {
     setCurrentModel(info.model)
+    // Runtime metadata mirrors the open session. It must not become a sticky
+    // composer override for the active profile, or an old resumed local-model
+    // chat can poison the next fresh CEO session.
+    setCurrentModelProfile('')
     sessionState.model = info.model
   }
 
@@ -364,6 +371,7 @@ function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionRuntimeS
 
 function applyStoredSessionPreviewRuntimeInfo(stored: { model?: null | string } | undefined) {
   setCurrentModel(stored?.model || '')
+  setCurrentModelProfile('')
   setCurrentProvider('')
   setCurrentReasoningEffort('')
   setCurrentServiceTier('')
@@ -449,15 +457,16 @@ export function useSessionActions({
         const newChatProfile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
         await ensureGatewayProfile(newChatProfile)
         const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
-        // The composer's model/effort/fast is sticky UI state ($currentModel,
-        // $currentProvider, $currentReasoningEffort, $currentFastMode). Ship it
-        // with every session.create so the new chat opens on whatever the picker
-        // shows — applied as per-session overrides, never written to the profile
-        // default (that lives in Settings → Model).
-        const uiModel = $currentModel.get().trim()
-        const uiProvider = $currentProvider.get().trim()
-        const uiEffort = $currentReasoningEffort.get().trim()
-        const uiFast = $currentFastMode.get()
+        // The composer's runtime selection is sticky only within its owning
+        // profile. If a profile switch races the async default refresh, do not
+        // send a stale per-session override (for example emergency Qwopus into
+        // the CEO profile); omit it so the target profile's default model wins.
+        const runtimeOwner = normalizeProfileKey($currentModelProfile.get())
+        const runtimeBelongsToTarget = !!runtimeOwner && runtimeOwner === newChatProfile
+        const uiModel = runtimeBelongsToTarget ? $currentModel.get().trim() : ''
+        const uiProvider = runtimeBelongsToTarget ? $currentProvider.get().trim() : ''
+        const uiEffort = runtimeBelongsToTarget ? $currentReasoningEffort.get().trim() : ''
+        const uiFast = runtimeBelongsToTarget && $currentFastMode.get()
 
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
@@ -489,7 +498,7 @@ export function useSessionActions({
           // reads meaningfully while the turn is in flight, instead of flashing
           // "Untitled session" until the turn persists and auto-title runs. The
           // server later returns its own preview/title and supersedes this.
-          upsertOptimisticSession(created, stored, null, preview?.trim() || null)
+          upsertOptimisticSession(created, stored, null, preview?.trim() || null, newChatProfile)
           navigate(sessionRoute(stored), { replace: true })
           // Other windows (e.g. the main window when this is the pop-out) can't
           // see this session until they re-pull the shared list.

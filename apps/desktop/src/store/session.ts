@@ -12,12 +12,13 @@ type Updater<T> = T | ((current: T) => T)
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
 // The composer's model/effort/fast is sticky UI state, NOT the profile default
-// (that lives in Settings → Model). Persisting it in localStorage makes a pick
-// follow across Cmd+N and app restarts instead of snapping back to the default.
-// It's deliberately global (not per-profile): a profile switch force-reseeds to
-// that profile's default, while within a profile new chats keep your last pick.
+// (that lives in Settings → Model). A manual pick may follow Cmd+N inside the
+// same profile, but it must not leak across profile switches. The profile key
+// below records which profile owns the current runtime selection; session.create
+// ignores model overrides whose owner does not match the target profile.
 const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
+const COMPOSER_MODEL_PROFILE_KEY = 'hermes.desktop.composer.model.profile'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 
@@ -237,6 +238,7 @@ export const $resumeFailedSessionId = atom<string | null>(null)
 export const $resumeExhaustedSessionId = atom<string | null>(null)
 export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
 export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
+export const $currentModelProfile = atom(storedString(COMPOSER_MODEL_PROFILE_KEY) ?? '')
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
@@ -294,6 +296,11 @@ export const setCurrentProvider = (next: Updater<string>) => {
   persistString(COMPOSER_PROVIDER_KEY, $currentProvider.get() || null)
 }
 
+export const setCurrentModelProfile = (next: Updater<string>) => {
+  updateAtom($currentModelProfile, next)
+  persistString(COMPOSER_MODEL_PROFILE_KEY, $currentModelProfile.get() || null)
+}
+
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
   persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
@@ -304,6 +311,14 @@ export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($curr
 export const setCurrentFastMode = (next: Updater<boolean>) => {
   updateAtom($currentFastMode, next)
   persistBoolean(COMPOSER_FAST_KEY, $currentFastMode.get())
+}
+
+export function clearComposerRuntimeSelection(): void {
+  setCurrentModel('')
+  setCurrentProvider('')
+  setCurrentModelProfile('')
+  setCurrentReasoningEffort('')
+  setCurrentFastMode(false)
 }
 
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)

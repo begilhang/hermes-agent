@@ -204,12 +204,50 @@ export async function listAllProfileSessions(
 // read path. A remote session's row lives only on its remote host, so a mutation
 // that hit the local primary would no-op or 404. Omit for the current/default.
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
-  return window.hermesDesktop.api<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+  return mutateSessionWithProfileFallback<{ ok: boolean }>(id, profile, resolvedProfile => ({
+    ...(resolvedProfile ? { profile: resolvedProfile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { archived }
-  })
+    body: { archived, ...(resolvedProfile ? { profile: resolvedProfile } : {}) }
+  }))
+}
+
+function sessionNotFound(error: unknown): boolean {
+  return /session not found/i.test(String(error instanceof Error ? error.message : error))
+}
+
+async function resolveSessionProfile(id: string): Promise<string | null> {
+  try {
+    const result = await listAllProfileSessions(500, 0, 'include', 'recent', 'all')
+    const session = result.sessions.find(s => s.id === id || s._lineage_root_id === id)
+    const profile = session?.profile?.trim()
+
+    return profile && profile !== 'default' ? profile : null
+  } catch {
+    return null
+  }
+}
+
+async function mutateSessionWithProfileFallback<T>(
+  id: string,
+  profile: string | null | undefined,
+  requestForProfile: (profile: string | null | undefined) => Parameters<typeof window.hermesDesktop.api<T>>[0]
+): Promise<T> {
+  try {
+    return await window.hermesDesktop.api<T>(requestForProfile(profile))
+  } catch (error) {
+    if (profile || !sessionNotFound(error)) {
+      throw error
+    }
+
+    const resolvedProfile = await resolveSessionProfile(id)
+
+    if (!resolvedProfile) {
+      throw error
+    }
+
+    return window.hermesDesktop.api<T>(requestForProfile(resolvedProfile))
+  }
 }
 
 export function searchSessions(query: string): Promise<SessionSearchResponse> {
@@ -245,11 +283,11 @@ export function getSessionMessages(id: string, profile?: string | null): Promise
 }
 
 export function deleteSession(id: string, profile?: string | null): Promise<{ ok: boolean }> {
-  return window.hermesDesktop.api<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+  return mutateSessionWithProfileFallback<{ ok: boolean }>(id, profile, resolvedProfile => ({
+    ...(resolvedProfile ? { profile: resolvedProfile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'DELETE'
-  })
+  }))
 }
 
 export function renameSession(
@@ -257,12 +295,12 @@ export function renameSession(
   title: string,
   profile?: string | null
 ): Promise<{ ok: boolean; title: string }> {
-  return window.hermesDesktop.api<{ ok: boolean; title: string }>({
-    ...(profile ? { profile } : {}),
+  return mutateSessionWithProfileFallback<{ ok: boolean; title: string }>(id, profile, resolvedProfile => ({
+    ...(resolvedProfile ? { profile: resolvedProfile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { title, ...(profile ? { profile } : {}) }
-  })
+    body: { title, ...(resolvedProfile ? { profile: resolvedProfile } : {}) }
+  }))
 }
 
 export function getGlobalModelInfo(): Promise<ModelInfoResponse> {

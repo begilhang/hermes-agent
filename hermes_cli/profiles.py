@@ -504,7 +504,11 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
         return None
     canon = normalize_profile_name(profile_name)
     is_windows = sys.platform == "win32"
-    needle = f"hermes -p {canon}"
+    quoted = rf"(?:{re.escape(canon)}|'{re.escape(canon)}'|\"{re.escape(canon)}\")"
+    target_patterns = (
+        re.compile(rf"(?:^|[\s;&|])(?:exec\s+)?hermes\s+-p\s+{quoted}(?=\s|$)"),
+        re.compile(rf"(?:^|[\s;&|])(?:exec\s+)?hermes\s+--profile\s+{quoted}(?=\s|$)"),
+    )
 
     custom: Optional[str] = None
     profile_named: Optional[str] = None
@@ -520,7 +524,7 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
             content = entry.read_text()
         except (OSError, UnicodeDecodeError):
             continue
-        if needle not in content:
+        if not any(pattern.search(content) for pattern in target_patterns):
             continue
         alias = entry.stem if is_windows else entry.name
         if alias == canon:

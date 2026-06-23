@@ -5,7 +5,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages } from '@/hermes'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
-import { $currentCwd, $messages, $resumeFailedSessionId, setMessages, setResumeFailedSessionId } from '@/store/session'
+import {
+  $currentCwd,
+  $currentModel,
+  $currentModelProfile,
+  $messages,
+  $resumeFailedSessionId,
+  setCurrentModel,
+  setCurrentModelProfile,
+  setCurrentProvider,
+  setMessages,
+  setResumeFailedSessionId,
+  setSessions
+} from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -84,6 +96,10 @@ describe('createBackendSessionForSend profile routing', () => {
     cleanup()
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
+    setCurrentModel('')
+    setCurrentModelProfile('')
+    setCurrentProvider('')
+    setSessions([])
     vi.restoreAllMocks()
   })
 
@@ -116,6 +132,40 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ profile: 'default' })
+  })
+
+  it('does not send a stale composer model after switching profiles', async () => {
+    const params = await createWith(() => {
+      // Repro: user clicked emergency first, so the composer still shows the
+      // emergency brain. Then they switch to CEO and immediately send before
+      // the async profile-default refresh settles. The new CEO session must
+      // use the CEO profile default, not carry Qwopus as a per-session override.
+      setCurrentModel('Qwopus3.6-35B-A3B-v1-6bit-MTPLX-Optimized-Speed')
+      setCurrentProvider('custom:omlx-local')
+      setCurrentModelProfile('emergency_local_ceo_router')
+      $activeGatewayProfile.set('0-ceo-orchesteator')
+      $newChatProfile.set(null)
+    })
+
+    expect(params).toMatchObject({ profile: '0-ceo-orchesteator' })
+    expect(params).not.toHaveProperty('model')
+    expect(params).not.toHaveProperty('provider')
+  })
+
+  it('keeps an explicit composer model when it belongs to the target profile', async () => {
+    const params = await createWith(() => {
+      setCurrentModel('gpt-5.5')
+      setCurrentProvider('openai-codex')
+      setCurrentModelProfile('0-ceo-orchesteator')
+      $activeGatewayProfile.set('0-ceo-orchesteator')
+      $newChatProfile.set(null)
+    })
+
+    expect(params).toMatchObject({
+      profile: '0-ceo-orchesteator',
+      model: 'gpt-5.5',
+      provider: 'openai-codex'
+    })
   })
 })
 
@@ -160,8 +210,13 @@ function ResumeHarness({
 describe('resumeSession failure recovery', () => {
   afterEach(() => {
     cleanup()
+    $activeGatewayProfile.set('default')
+    setCurrentModel('')
+    setCurrentModelProfile('')
+    setCurrentProvider('')
     setResumeFailedSessionId(null)
     setMessages([])
+    setSessions([])
     vi.restoreAllMocks()
   })
 
@@ -255,5 +310,56 @@ describe('resumeSession failure recovery', () => {
     await runResume(requestGateway)
 
     expect($resumeFailedSessionId.get()).toBeNull()
+  })
+
+  it('does not turn a resumed local-model session into a sticky profile model override', async () => {
+    $activeGatewayProfile.set('0-ceo-orchesteator')
+    setSessions([
+      {
+        cwd: null,
+        ended_at: null,
+        id: 'stored-1',
+        input_tokens: 0,
+        is_active: true,
+        is_default_profile: false,
+        last_active: 1,
+        message_count: 1,
+        model: 'Qwopus3.6-35B-A3B-v1-6bit-MTPLX-Optimized-Speed',
+        output_tokens: 0,
+        preview: null,
+        profile: '0-ceo-orchesteator',
+        source: 'tui',
+        started_at: 1,
+        title: 'old local session',
+        tool_call_count: 0
+      }
+    ])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-1',
+          resumed: params?.session_id,
+          messages: [],
+          info: {
+            model: 'Qwopus3.6-35B-A3B-v1-6bit-MTPLX-Optimized-Speed',
+            provider: 'custom:omlx-local'
+          }
+        } as never
+      }
+
+      if (method === 'session.usage') {
+        return { calls: 0, input: 0, output: 0, total: 0 } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    await runResume(requestGateway)
+
+    expect($currentModel.get()).toBe('Qwopus3.6-35B-A3B-v1-6bit-MTPLX-Optimized-Speed')
+    expect($currentModelProfile.get()).toBe('')
   })
 })

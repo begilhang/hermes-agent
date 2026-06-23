@@ -40,6 +40,7 @@ import {
   setCurrentCwd,
   setCurrentFastMode,
   setCurrentModel,
+  setCurrentModelProfile,
   setCurrentPersonality,
   setCurrentProvider,
   setCurrentReasoningEffort,
@@ -738,6 +739,7 @@ export function useMessageStream({
         if (apply) {
           if (modelChanged) {
             setCurrentModel(payload!.model || '')
+            setCurrentModelProfile('')
           }
 
           if (providerChanged) {

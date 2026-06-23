@@ -4103,7 +4103,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
-        "discover_models", "extra_body",
+        "discover_models", "extra_body", "request_overrides",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -4202,6 +4202,10 @@ def _normalize_custom_provider_entry(
     if isinstance(extra_body, dict):
         normalized["extra_body"] = dict(extra_body)
 
+    request_overrides = entry.get("request_overrides")
+    if isinstance(request_overrides, dict):
+        normalized["request_overrides"] = dict(request_overrides)
+
     return normalized
 
 
@@ -4229,6 +4233,7 @@ def _custom_provider_entry_to_provider_config(
         "rate_limit_delay",
         "discover_models",
         "extra_body",
+        "request_overrides",
     ):
         if field in normalized:
             provider_entry[field] = normalized[field]

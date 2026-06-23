@@ -12,7 +12,7 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { $gateway, ensureGatewayForProfile } from '@/store/gateway'
-import { setConnection } from '@/store/session'
+import { clearComposerRuntimeSelection, setConnection } from '@/store/session'
 import type { ProfileInfo } from '@/types/hermes'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
@@ -295,6 +295,7 @@ export function selectProfile(name: string): void {
   $newChatProfile.set(target)
 
   if (switching) {
+    clearComposerRuntimeSelection()
     requestFreshSession()
   }
 
@@ -309,6 +310,12 @@ export function selectProfile(name: string): void {
 // message lands in the right place.
 export function newSessionInProfile(name: string): void {
   const target = normalizeProfileKey(name)
+  const switching = target !== normalizeProfileKey($activeGatewayProfile.get())
+
+  if (switching) {
+    clearComposerRuntimeSelection()
+  }
+
   $newChatProfile.set(target)
   requestFreshSession()
   void ensureGatewayProfile(target)

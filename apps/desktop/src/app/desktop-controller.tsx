@@ -73,6 +73,7 @@ import {
   setCurrentBranch,
   setCurrentCwd,
   setCurrentModel,
+  setCurrentModelProfile,
   setCurrentProvider,
   setMessages,
   setMessagingPlatformTotals,
@@ -993,6 +994,7 @@ export function DesktopController() {
             onMainModelChanged={(provider, model) => {
               setCurrentProvider(provider)
               setCurrentModel(model)
+              setCurrentModelProfile(normalizeProfileKey($activeGatewayProfile.get()))
               updateModelOptionsCache(provider, model, true)
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })

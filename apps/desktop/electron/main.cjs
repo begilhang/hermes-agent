@@ -1814,11 +1814,9 @@ function forceKillProcessTree(pid) {
 // pool backends and poll the shim until it's writable (or a bounded timeout),
 // so by the time we spawn the updater the lock is genuinely gone.
 //
-// Windows-only: the venv-shim mandatory lock is a Windows phenomenon. On
-// macOS/Linux there's no REPLACE-on-running-exe block, the existing before-quit
-// SIGTERM + app.quit() teardown already works (the macOS path is flawless), and
-// aggressively SIGKILL-ing the backend here would be an untested behavior change
-// for no benefit. So we no-op off Windows and leave that path exactly as it was.
+// Windows-only: the venv-shim mandatory lock is a Windows phenomenon. POSIX
+// quit still needs its own backend drain in before-quit; see
+// teardownBackendsForQuit().
 async function releaseBackendLockForUpdate(updateRoot) {
   return releaseBackendLock(updateRoot, 'updates')
 }
@@ -5047,6 +5045,30 @@ function stopAllPoolBackends() {
   }
 }
 
+async function teardownBackendsForQuit(timeoutMs = 5000) {
+  const children = []
+  if (hermesProcess && !hermesProcess.killed) {
+    children.push(hermesProcess)
+  }
+  for (const entry of backendPool.values()) {
+    if (entry.process && !entry.process.killed) {
+      children.push(entry.process)
+    }
+  }
+
+  if (hermesProcess && !hermesProcess.killed) {
+    try {
+      hermesProcess.kill('SIGTERM')
+    } catch {
+      // Already gone.
+    }
+  }
+  stopAllPoolBackends()
+
+  await Promise.all(children.map(child => waitForBackendExit(child, timeoutMs)))
+  hermesProcess = null
+}
+
 function profileNameFromDeleteRequest(request) {
   if (!request || String(request.method || 'GET').toUpperCase() !== 'DELETE') {
     return null
@@ -6771,7 +6793,15 @@ function configureSpellChecker() {
   }
 }
 
-app.on('before-quit', () => {
+let quitTeardownStarted = false
+
+app.on('before-quit', event => {
+  if (quitTeardownStarted) {
+    return
+  }
+  quitTeardownStarted = true
+  event.preventDefault()
+
   // Quitting mid-install should stop the installer, not orphan it.
   if (bootstrapAbortController) {
     try {
@@ -6794,10 +6824,14 @@ app.on('before-quit', () => {
     disposeTerminalSession(id)
   }
 
-  if (hermesProcess && !hermesProcess.killed) {
-    hermesProcess.kill('SIGTERM')
-  }
-  stopAllPoolBackends()
+  teardownBackendsForQuit()
+    .catch(error => {
+      rememberLog(`Backend quit teardown failed: ${error.message}`)
+    })
+    .finally(() => {
+      flushDesktopLogBufferSync()
+      app.exit(0)
+    })
 })
 
 app.on('window-all-closed', () => {

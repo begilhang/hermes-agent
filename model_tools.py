@@ -595,6 +595,206 @@ _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
+def _truthy_config_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "y"}
+    return False
+
+
+def _is_subagent_task(task_id: str | None) -> bool:
+    raw = str(task_id or "")
+    return raw.startswith("sa-") or raw.startswith("subagent-")
+
+
+def _local_worker_enforcement_config() -> Dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+    except Exception:
+        return {}
+
+    raw = cfg.get("local_worker_enforcement")
+    if not isinstance(raw, dict):
+        return {}
+    if not _truthy_config_value(raw.get("enabled", False)):
+        return {}
+    return raw
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return default
+    return out if out > 0 else default
+
+
+def _local_worker_block_message(kind: str, detail: str) -> str:
+    return (
+        f"CHEAP_LOCAL_WORKER_REQUIRED: broad parent {kind} is blocked for this profile."
+        f" {detail} Route source inspection, status reconstruction, repo/vault/log search,"
+        " memory comparison, routine critique, or checklist generation through a lane-scoped"
+        " local delegate_task worker first. The CEO parent should read only the compact"
+        " worker report, then decide, verify, give feedback, or escalate. Narrow deterministic"
+        " metadata checks remain allowed; broad discovery belongs in disposable worker context."
+    )
+
+
+def _parent_source_read_block(
+    function_name: str,
+    function_args: Dict[str, Any],
+    *,
+    task_id: str | None,
+) -> Optional[str]:
+    """Block broad parent reads when a profile requires local-worker extraction.
+
+    This is deliberately scoped to parent ``read_file`` calls. ``delegate_task``
+    children must be able to read sources, and narrow parent excerpts remain
+    allowed for routing blocks, filenames, and small deterministic checks.
+    """
+    if function_name != "read_file":
+        return None
+    if _is_subagent_task(task_id):
+        return None
+
+    guard = _local_worker_enforcement_config()
+    if not guard:
+        return None
+    if _truthy_config_value(function_args.get("local_worker_bypass")):
+        return None
+
+    max_lines = _coerce_positive_int(guard.get("max_parent_read_lines"), 120)
+    default_limit = _coerce_positive_int(guard.get("default_parent_read_limit"), 500)
+    requested_limit = _coerce_positive_int(function_args.get("limit"), default_limit)
+    if requested_limit <= max_lines:
+        return None
+
+    path = str(function_args.get("path") or function_args.get("filepath") or "").strip()
+    max_bytes = _coerce_positive_int(guard.get("max_parent_read_bytes"), 8192)
+    size_hint = ""
+    if path:
+        try:
+            size = os.path.getsize(os.path.expanduser(path))
+            size_hint = f" File size is {size} bytes; parent read limit is {max_bytes} bytes or {max_lines} lines."
+        except OSError:
+            size_hint = ""
+
+    return _local_worker_block_message(
+        "read_file",
+        (
+            f"Requested limit={requested_limit}; parent limit={max_lines} lines."
+            f"{size_hint} For a genuinely narrow deterministic excerpt, rerun read_file"
+            f" with limit <= {max_lines}. For a deliberate CEO bypass, pass"
+            " local_worker_bypass=true and record the bypass reason."
+        ),
+    )
+
+
+_BROAD_PARENT_TERMINAL_RE = re.compile(
+    r"(?ix)"
+    r"("
+    r"\b(rg|grep|find|fd|ag)\b"
+    r"|\bgit\s+(log|diff|show|grep|blame)\b"
+    r"|\b(cat|head|tail|sed|awk)\b"
+    r"|/api/queue\b"
+    r"|/v1/models\b"
+    r")"
+)
+
+
+_BROAD_PARENT_EXECUTE_CODE_RE = re.compile(
+    r"(?ix)"
+    r"("
+    r"subprocess\.(run|Popen|check_output|call)\s*\([^)]*['\"]\s*(rg|grep|find|fd|ag|git)\b"
+    r"|os\.system\s*\([^)]*\b(rg|grep|find|fd|ag|git)\b"
+    r"|os\.walk\s*\("
+    r"|Path\s*\([^)]*\)\.rglob\s*\("
+    r"|glob\.glob\s*\("
+    r"|/api/queue\b"
+    r"|/v1/models\b"
+    r")"
+)
+
+
+def _parent_broad_discovery_block(
+    function_name: str,
+    function_args: Dict[str, Any],
+    *,
+    task_id: str | None,
+) -> Optional[str]:
+    """Block broad parent discovery that should run in local worker context.
+
+    ``read_file`` has a dedicated size-aware guard above. This guard covers the
+    smaller-but-repeated discovery tools that were still able to fill the CEO
+    context window: terminal rg/find/git/curl sweeps and broad search_files
+    calls. Subagents are intentionally exempt because they are the disposable
+    contexts this policy wants the CEO to use.
+    """
+    if _is_subagent_task(task_id):
+        return None
+
+    guard = _local_worker_enforcement_config()
+    if not guard:
+        return None
+
+    policy = guard.get("ceo_context_preservation") or {}
+    if not isinstance(policy, dict) or not _truthy_config_value(policy.get("enabled", False)):
+        return None
+
+    if _truthy_config_value(function_args.get("local_worker_bypass")):
+        return None
+
+    if function_name == "search_files":
+        max_results = _coerce_positive_int(policy.get("max_parent_search_results"), 20)
+        default_limit = _coerce_positive_int(policy.get("default_parent_search_limit"), 50)
+        requested_limit = _coerce_positive_int(function_args.get("limit"), default_limit)
+        context = _coerce_positive_int(function_args.get("context"), 0)
+        output_mode = str(function_args.get("output_mode") or "content")
+        if requested_limit > max_results or context > 2 or output_mode == "content":
+            return _local_worker_block_message(
+                "search_files",
+                (
+                    f"Requested limit={requested_limit}, context={context},"
+                    f" output_mode={output_mode!r}; parent search limit is"
+                    f" {max_results} file/path/count results. Use search_files only for"
+                    " narrow routing-block or filename checks in the parent."
+                ),
+            )
+        return None
+
+    if function_name == "terminal":
+        command = str(function_args.get("command") or "")
+        if _BROAD_PARENT_TERMINAL_RE.search(command):
+            return _local_worker_block_message(
+                "terminal discovery",
+                (
+                    "Command matches broad discovery/status patterns"
+                    " (rg/grep/find/git log/diff/show, file dumping, queue/model sweeps)."
+                    " Parent terminal use should stay to exact health/status/metadata checks."
+                ),
+            )
+
+    if function_name == "execute_code":
+        code = str(function_args.get("code") or "")
+        if _BROAD_PARENT_EXECUTE_CODE_RE.search(code):
+            return _local_worker_block_message(
+                "execute_code discovery",
+                (
+                    "Code matches broad discovery patterns"
+                    " (subprocess/os shell rg/grep/find/git, os.walk/rglob/glob,"
+                    " queue/model sweeps). Use execute_code in the parent only"
+                    " for bounded deterministic transforms/checks."
+                ),
+            )
+
+    return None
+
+
 # =========================================================================
 # Tool error sanitization
 # =========================================================================
@@ -1042,6 +1242,22 @@ def handle_function_call(
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+
+        _parent_read_block = _parent_source_read_block(
+            function_name,
+            function_args,
+            task_id=task_id,
+        )
+        if _parent_read_block is not None:
+            return json.dumps({"error": _parent_read_block}, ensure_ascii=False)
+
+        _parent_discovery_block = _parent_broad_discovery_block(
+            function_name,
+            function_args,
+            task_id=task_id,
+        )
+        if _parent_discovery_block is not None:
+            return json.dumps({"error": _parent_discovery_block}, ensure_ascii=False)
 
         # Check plugin hooks for a block directive (unless caller already
         # checked — e.g. run_agent._invoke_tool passes skip=True to

@@ -99,6 +99,11 @@ def _custom_provider_model_matches(agent_model: str, entry: Dict[str, Any]) -> b
     return provider_model == str(agent_model or "").strip().lower()
 
 
+def _is_custom_provider_name(provider: str) -> bool:
+    provider_name = (provider or "").strip().lower()
+    return provider_name == "custom" or provider_name.startswith("custom:")
+
+
 def _custom_provider_extra_body_for_agent(
     *,
     provider: str,
@@ -106,7 +111,7 @@ def _custom_provider_extra_body_for_agent(
     base_url: str,
     custom_providers: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    if (provider or "").strip().lower() != "custom":
+    if not _is_custom_provider_name(provider):
         return None
 
     target_url = _normalized_custom_base_url(base_url)
@@ -132,22 +137,76 @@ def _custom_provider_extra_body_for_agent(
     return fallback
 
 
+def _custom_provider_request_overrides_for_agent(
+    *,
+    provider: str,
+    model: str,
+    base_url: str,
+    custom_providers: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Return per-model top-level request overrides for custom providers.
+
+    ``providers.<key>.extra_body`` is already supported for provider-specific
+    payload fields (for example ``top_k`` on local OpenAI-compatible servers).
+    Sampling knobs such as ``temperature`` and ``top_p`` are first-class
+    Chat Completions parameters, so local-profile setup needs a separate
+    ``request_overrides`` escape hatch. Match semantics mirror
+    ``_custom_provider_extra_body_for_agent``: a model-specific provider entry
+    wins over a base-url fallback entry.
+    """
+    if not _is_custom_provider_name(provider):
+        return None
+
+    target_url = _normalized_custom_base_url(base_url)
+    if not target_url:
+        return None
+
+    fallback: Optional[Dict[str, Any]] = None
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
+            continue
+        request_overrides = entry.get("request_overrides")
+        if not isinstance(request_overrides, dict) or not request_overrides:
+            continue
+        provider_model = str(entry.get("model", "") or "").strip()
+        if provider_model:
+            if _custom_provider_model_matches(model, entry):
+                return dict(request_overrides)
+        elif fallback is None:
+            fallback = dict(request_overrides)
+
+    return fallback
+
+
 def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, Any]]) -> None:
+    request_overrides = _custom_provider_request_overrides_for_agent(
+        provider=agent.provider,
+        model=agent.model,
+        base_url=agent.base_url,
+        custom_providers=custom_providers,
+    )
     extra_body = _custom_provider_extra_body_for_agent(
         provider=agent.provider,
         model=agent.model,
         base_url=agent.base_url,
         custom_providers=custom_providers,
     )
-    if not extra_body:
+    if not request_overrides and not extra_body:
         return
 
     overrides = dict(getattr(agent, "request_overrides", {}) or {})
-    merged_extra_body = dict(extra_body)
-    existing_extra_body = overrides.get("extra_body")
-    if isinstance(existing_extra_body, dict):
-        merged_extra_body.update(existing_extra_body)
-    overrides["extra_body"] = merged_extra_body
+    if request_overrides:
+        # Existing turn-level overrides (e.g. /fast service tier) must win.
+        for key, value in request_overrides.items():
+            overrides.setdefault(key, value)
+    if extra_body:
+        merged_extra_body = dict(extra_body)
+        existing_extra_body = overrides.get("extra_body")
+        if isinstance(existing_extra_body, dict):
+            merged_extra_body.update(existing_extra_body)
+        overrides["extra_body"] = merged_extra_body
     agent.request_overrides = overrides
 
 

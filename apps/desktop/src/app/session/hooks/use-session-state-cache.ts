@@ -11,6 +11,7 @@ import {
   noteSessionActivity,
   setCurrentFastMode,
   setCurrentModel,
+  setCurrentModelProfile,
   setCurrentPersonality,
   setCurrentProvider,
   setCurrentReasoningEffort,
@@ -56,6 +57,7 @@ interface SessionStateCacheOptions {
 
 function syncRuntimeMetadataToView(state: ClientSessionState) {
   setCurrentModel(state.model ?? '')
+  setCurrentModelProfile('')
   setCurrentProvider(state.provider ?? '')
   setCurrentReasoningEffort(state.reasoningEffort ?? '')
   setCurrentServiceTier(state.serviceTier ?? '')

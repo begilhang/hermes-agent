@@ -15,8 +15,18 @@ vi.mock('@/hermes', () => ({
 }))
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 
-const { $activeGatewayProfile, ensureGatewayProfile } = await import('./profile')
-const { $connection } = await import('./session')
+const { $activeGatewayProfile, ensureGatewayProfile, newSessionInProfile, selectProfile } = await import('./profile')
+const {
+  $connection,
+  $currentFastMode,
+  $currentModel,
+  $currentModelProfile,
+  $currentProvider,
+  setCurrentFastMode,
+  setCurrentModel,
+  setCurrentModelProfile,
+  setCurrentProvider
+} = await import('./session')
 
 const remoteConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
   ({ baseUrl: 'https://hermes-roy.tail.ts.net', mode: 'remote', profile: 'vps-remote', ...over }) as HermesConnection
@@ -32,12 +42,20 @@ beforeEach(() => {
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
+  setCurrentModel('')
+  setCurrentModelProfile('')
+  setCurrentProvider('')
+  setCurrentFastMode(false)
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
 })
 
 afterEach(() => {
   vi.unstubAllGlobals()
   $connection.set(null)
+  setCurrentModel('')
+  setCurrentModelProfile('')
+  setCurrentProvider('')
+  setCurrentFastMode(false)
 })
 
 describe('ensureGatewayProfile → $connection sync (#46651)', () => {
@@ -85,5 +103,36 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect(getConnection).not.toHaveBeenCalled()
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+})
+
+describe('profile switches clear profile-owned composer runtime selection', () => {
+  function seedEmergencyModel() {
+    setCurrentModel('Qwopus3.6-35B-A3B-v1-6bit-MTPLX-Optimized-Speed')
+    setCurrentProvider('custom:omlx-local')
+    setCurrentModelProfile('emergency_local_ceo_router')
+    setCurrentFastMode(true)
+  }
+
+  it('clears a stale model immediately when selecting another profile', () => {
+    seedEmergencyModel()
+
+    selectProfile('0-ceo-orchesteator')
+
+    expect($currentModel.get()).toBe('')
+    expect($currentProvider.get()).toBe('')
+    expect($currentModelProfile.get()).toBe('')
+    expect($currentFastMode.get()).toBe(false)
+  })
+
+  it('clears a stale model immediately when creating a new session in another profile', () => {
+    seedEmergencyModel()
+
+    newSessionInProfile('0-ceo-orchesteator')
+
+    expect($currentModel.get()).toBe('')
+    expect($currentProvider.get()).toBe('')
+    expect($currentModelProfile.get()).toBe('')
+    expect($currentFastMode.get()).toBe(false)
   })
 })

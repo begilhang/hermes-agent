@@ -4,11 +4,14 @@ import { useCallback } from 'react'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $activeSessionId,
   $currentModel,
+  $currentModelProfile,
   $currentProvider,
   setCurrentModel,
+  setCurrentModelProfile,
   setCurrentProvider
 } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -57,6 +60,7 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
       }
 
       const result = await getGlobalModelInfo()
+      const profileKey = normalizeProfileKey($activeGatewayProfile.get())
 
       if ($activeSessionId.get() || (!force && $currentModel.get())) {
         return
@@ -69,6 +73,8 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
       if (typeof result.provider === 'string') {
         setCurrentProvider(result.provider)
       }
+
+      setCurrentModelProfile(profileKey)
     } catch {
       // The delayed session.info event still updates this once the agent is ready.
     }
@@ -87,9 +93,12 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
       // rather than leave the UI showing a model the backend never selected.
       const prevModel = $currentModel.get()
       const prevProvider = $currentProvider.get()
+      const prevModelProfile = $currentModelProfile.get()
+      const profileKey = normalizeProfileKey($activeGatewayProfile.get())
 
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
+      setCurrentModelProfile(profileKey)
       updateModelOptionsCache(selection.provider, selection.model, !activeSessionId)
 
       // No live session yet: the pick is pure UI state. session.create reads
@@ -111,6 +120,7 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
       } catch (err) {
         setCurrentModel(prevModel)
         setCurrentProvider(prevProvider)
+        setCurrentModelProfile(prevModelProfile)
         updateModelOptionsCache(prevProvider, prevModel, !activeSessionId)
         notifyError(err, copy.modelSwitchFailed)
 

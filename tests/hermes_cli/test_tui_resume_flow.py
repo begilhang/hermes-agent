@@ -856,6 +856,143 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["prompt"] == "recall this"
+    assert captured["max_iterations"] == 90
+
+
+def test_oneshot_honors_profile_max_turns(monkeypatch):
+    """hermes -z must not fall back to AIAgent's constructor default turns."""
+    from hermes_cli.oneshot import _run_agent
+
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+
+        def chat(self, prompt):
+            captured["prompt"] = prompt
+            return "ok"
+
+    def mod(name, **attrs):
+        module = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod(
+            "hermes_cli.config",
+            load_config=lambda: {
+                "model": {"default": "m"},
+                "agent": {"max_turns": 7},
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        mod("hermes_cli.models", detect_provider_for_model=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_kwargs: {
+                "api_key": "k",
+                "base_url": "u",
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "credential_pool": None,
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: set()),
+    )
+
+    assert _run_agent("normal work") == "ok"
+    assert captured["max_iterations"] == 7
+
+
+def test_oneshot_packet_prompts_are_turn_capped(monkeypatch):
+    """Packet workers should fail/finish quickly instead of eating a full profile budget."""
+    from hermes_cli.oneshot import _run_agent
+
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+
+        def chat(self, prompt):
+            captured["prompt"] = prompt
+            return "ok"
+
+    def mod(name, **attrs):
+        module = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod(
+            "hermes_cli.config",
+            load_config=lambda: {
+                "model": {"default": "m"},
+                "agent": {"max_turns": 16},
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        mod("hermes_cli.models", detect_provider_for_model=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_kwargs: {
+                "api_key": "k",
+                "base_url": "u",
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "credential_pool": None,
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: set()),
+    )
+
+    assert _run_agent("Return only valid JSON CEO_DECISION_PACKET") == "ok"
+    assert captured["max_iterations"] == 4
+
+
+def test_chat_query_packet_prompt_is_detected_for_turn_cap():
+    from cli import _is_packet_scoped_query
+
+    assert _is_packet_scoped_query("Return only valid JSON CEO_DECISION_PACKET")
+    assert _is_packet_scoped_query("Return compact JSON only with packet_type")
+    assert not _is_packet_scoped_query("Tell me about BookForge")
 
 
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):

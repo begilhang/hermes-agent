@@ -86,6 +86,32 @@ def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_API_KEY") == "sk-123"
 
 
+def test_minimal_dotenv_parser_keeps_startup_working_without_python_dotenv(
+    tmp_path, monkeypatch
+):
+    from hermes_cli import env_loader
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text(
+        "export OPENAI_BASE_URL=\"https://minimal.example/v1\"\n"
+        "OPENAI_API_KEY='sk-minimal'\n"
+        "# ignored comment\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(env_loader, "_python_dotenv_load", None)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example/v1")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("OPENAI_BASE_URL") == "https://minimal.example/v1"
+    assert os.getenv("OPENAI_API_KEY") == "sk-minimal"
+
+
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()

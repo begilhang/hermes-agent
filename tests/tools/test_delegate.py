@@ -216,6 +216,79 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][1]["summary"], "Result B")
         self.assertIn("total_duration_seconds", result)
 
+    @patch("gateway.session_context.async_delivery_supported", return_value=True)
+    @patch("tools.async_delegation.dispatch_async_delegation_batch")
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_background_route_preflight_uses_same_deterministic_runner(
+        self,
+        mock_agent_cls,
+        mock_load_config,
+        mock_dispatch,
+        _mock_async_supported,
+    ):
+        mock_load_config.return_value = {
+            "profile": "global_orchestrator",
+            "max_iterations": 45,
+            "model": "",
+            "provider": "",
+            "fallback_providers": [
+                {
+                    "provider": "openrouter",
+                    "model": "deepseek/deepseek-v4-flash",
+                    "base_url": "https://openrouter.ai/api/v1",
+                },
+                {
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-flash",
+                    "base_url": "https://api.deepseek.com/v1",
+                },
+            ],
+        }
+        child = MagicMock()
+        child.model = "qwen36-27b-omlx-production"
+        child.provider = "custom:omlx-local"
+        child.base_url = "http://127.0.0.1:8001/v1"
+        child.session_prompt_tokens = 0
+        child.session_completion_tokens = 0
+        child.run_conversation.side_effect = AssertionError(
+            "route preflight must not call the child model"
+        )
+        mock_agent_cls.return_value = child
+
+        captured = {}
+
+        def fake_dispatch(**kwargs):
+            captured["runner_result"] = kwargs["runner"]()
+            return {"status": "dispatched", "delegation_id": "async-route-1"}
+
+        mock_dispatch.side_effect = fake_dispatch
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(
+                goal="ROUTE_PREFLIGHT_ONLY. Return only valid JSON.",
+                background=True,
+                parent_agent=parent,
+            )
+        )
+
+        assert result["status"] == "dispatched"
+        assert result["delegation_id"] == "async-route-1"
+        runner_result = captured["runner_result"]
+        packet = json.loads(runner_result["results"][0]["summary"])
+        assert runner_result["results"][0]["status"] == "completed"
+        assert runner_result["results"][0]["api_calls"] == 0
+        assert packet["route_gate"] == "ROUTE_PASS"
+        assert packet["effective_profile"] == "global_orchestrator"
+        assert packet["effective_model"] == "qwen36-27b-omlx-production"
+        assert packet["effective_provider"] == "custom:omlx-local"
+        assert packet["effective_base_url"] == "http://127.0.0.1:8001/v1"
+        assert packet["fallback_chain"] == ["openrouter_deepseek", "direct_deepseek"]
+        assert packet["forbidden_fallback_detected"] is False
+        assert packet["surface"] == "delegate_task"
+        child.run_conversation.assert_not_called()
+
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode_accepts_json_string_tasks(self, mock_run):
         mock_run.side_effect = [

@@ -1792,6 +1792,27 @@ def test_named_custom_runtime_propagates_extra_body_direct_path(monkeypatch):
     }
 
 
+def test_named_custom_runtime_propagates_request_overrides_direct_path(monkeypatch):
+    """Custom provider request_overrides should become runtime request_overrides."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-local")
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-local",
+            "base_url": "http://localhost:8001/v1",
+            "api_key": "test-key",
+            "model": "qwen36-27b",
+            "request_overrides": {"temperature": 0.1, "top_p": 0.8},
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-local")
+
+    assert resolved["request_overrides"] == {"temperature": 0.1, "top_p": 0.8}
+
+
 def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
     """Model should propagate even when credential pool handles credentials."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
@@ -1850,6 +1871,31 @@ def test_named_custom_runtime_propagates_extra_body_pool_path(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="my-gemma")
     assert resolved["request_overrides"] == {
         "extra_body": {"enable_thinking": True}
+    }
+
+
+def test_named_custom_runtime_merges_request_overrides_with_extra_body(monkeypatch):
+    """Direct request_overrides and convenience extra_body should merge."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-gemma")
+    monkeypatch.setattr(
+        rp,
+        "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-gemma",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "google/gemma-4-31b-it",
+            "request_overrides": {"temperature": 0.2},
+            "extra_body": {"enable_thinking": True},
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-gemma")
+
+    assert resolved["request_overrides"] == {
+        "temperature": 0.2,
+        "extra_body": {"enable_thinking": True},
     }
 
 

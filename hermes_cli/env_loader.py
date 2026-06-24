@@ -6,8 +6,12 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
 from utils import atomic_replace
+
+try:
+    from dotenv import load_dotenv as _python_dotenv_load
+except ImportError:  # pragma: no cover - exercised by monkeypatch regression
+    _python_dotenv_load = None
 
 
 # Env var name suffixes that indicate credential values.  These are the
@@ -143,11 +147,44 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
+def _parse_env_line(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return None
+    if stripped.startswith("export "):
+        stripped = stripped[len("export ") :].lstrip()
+    key, value = stripped.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    return key, value
+
+
+def _load_dotenv_minimal(path: Path, *, override: bool, encoding: str) -> None:
+    with open(path, "r", encoding=encoding) as f:
+        for raw_line in f:
+            parsed = _parse_env_line(raw_line)
+            if parsed is None:
+                continue
+            key, value = parsed
+            if override or key not in os.environ:
+                os.environ[key] = value
+
+
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     try:
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
+        if _python_dotenv_load is not None:
+            _python_dotenv_load(dotenv_path=path, override=override, encoding="utf-8")
+        else:
+            _load_dotenv_minimal(path, override=override, encoding="utf-8")
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+        if _python_dotenv_load is not None:
+            _python_dotenv_load(dotenv_path=path, override=override, encoding="latin-1")
+        else:
+            _load_dotenv_minimal(path, override=override, encoding="latin-1")
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars

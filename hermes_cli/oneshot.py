@@ -23,11 +23,78 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
+
+
+_PACKET_MAX_ITERATIONS = 4
+_PACKET_TIMEOUT_SECONDS = 240
+
+
+class _OneshotTimeout(TimeoutError):
+    pass
+
+
+def _is_packet_scoped_prompt(prompt: str) -> bool:
+    text = (prompt or "").lower()
+    return (
+        "ceo_decision_packet" in text
+        or "ceo decision packet" in text
+        or "return compact json only" in text
+        or "return only valid json" in text
+        or "packet_valid" in text
+        or "packet_type" in text
+    )
+
+
+def _configured_max_iterations(config: dict, prompt: str) -> int:
+    agent_cfg = config.get("agent") if isinstance(config.get("agent"), dict) else {}
+    raw = agent_cfg.get("max_turns")
+    try:
+        max_turns = int(raw)
+    except (TypeError, ValueError):
+        max_turns = 90
+    max_turns = max(1, max_turns)
+    if _is_packet_scoped_prompt(prompt):
+        return min(max_turns, _PACKET_MAX_ITERATIONS)
+    return max_turns
+
+
+def _oneshot_timeout_seconds(prompt: str) -> int | None:
+    env_value = os.getenv("HERMES_ONESHOT_TIMEOUT_SECONDS", "").strip()
+    if env_value:
+        try:
+            parsed = int(float(env_value))
+        except ValueError:
+            parsed = 0
+        return max(30, parsed) if parsed > 0 else None
+    if _is_packet_scoped_prompt(prompt):
+        return _PACKET_TIMEOUT_SECONDS
+    return None
+
+
+def _install_alarm(seconds: int | None):
+    if not seconds or not hasattr(signal, "SIGALRM"):
+        return None
+
+    def _handler(_signum, _frame):
+        raise _OneshotTimeout(f"oneshot timed out after {seconds}s")
+
+    previous = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(int(seconds))
+    return previous
+
+
+def _clear_alarm(previous):
+    if previous is None or not hasattr(signal, "SIGALRM"):
+        return
+    signal.alarm(0)
+    signal.signal(signal.SIGALRM, previous)
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -140,12 +207,14 @@ def run_oneshot(
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
-    # Silence every stdlib logger for the duration.  AIAgent, tools, and
-    # provider adapters all log to stderr through the root logger; file
-    # handlers added by setup_logging() keep working (they're attached to
-    # the root logger's handler list, not affected by level), but no
-    # bytes reach the terminal.
-    logging.disable(logging.CRITICAL)
+    if (prompt or "").strip().upper().startswith("ROUTE_PREFLIGHT_ONLY"):
+        from hermes_cli.config import load_config
+        from hermes_cli.route_preflight import build_route_preflight_packet
+
+        sys.stdout.write(build_route_preflight_packet(load_config(), surface="cli"))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return 0
 
     # --provider without --model is ambiguous: carrying the user's configured
     # model across to a different provider is usually wrong (that provider may
@@ -171,6 +240,15 @@ def run_oneshot(
     os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
 
+    # Silence every stdlib logger for the duration.  AIAgent, tools, and
+    # provider adapters all log to stderr through the root logger; file
+    # handlers added by setup_logging() keep working (they're attached to
+    # the root logger's handler list, not affected by level), but no
+    # bytes reach the terminal.  Install this only after all early-return
+    # validation paths so failed validation cannot leak logging.disable().
+    previous_logging_disable = logging.root.manager.disable
+    logging.disable(logging.CRITICAL)
+
     # Redirect stderr AND stdout to devnull for the entire call tree.
     # We'll print the final response to the real stdout at the end.
     real_stdout = sys.stdout
@@ -179,9 +257,11 @@ def run_oneshot(
 
     response: Optional[str] = None
     failure: BaseException | None = None
+    alarm_previous = None
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
             try:
+                alarm_previous = _install_alarm(_oneshot_timeout_seconds(prompt))
                 response = _run_agent(
                     prompt,
                     model=model,
@@ -199,6 +279,8 @@ def run_oneshot(
                 # See #30623.
                 failure = exc
     finally:
+        logging.disable(previous_logging_disable)
+        _clear_alarm(alarm_previous)
         try:
             devnull.close()
         except Exception:
@@ -260,6 +342,7 @@ def _run_agent(
     from run_agent import AIAgent
 
     cfg = load_config()
+    max_iterations = _configured_max_iterations(cfg, prompt)
 
     # Resolve effective model: explicit arg → env var → config.
     model_cfg = cfg.get("model") or {}
@@ -341,6 +424,7 @@ def _run_agent(
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
+        max_iterations=max_iterations,
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,

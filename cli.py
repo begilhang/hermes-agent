@@ -3355,6 +3355,21 @@ def save_config_value(key_path: str, value: any) -> bool:
 # HermesCLI Class
 # ============================================================================
 
+_PACKET_SCOPED_MAX_TURNS = 4
+
+
+def _is_packet_scoped_query(query: str | None) -> bool:
+    text = (query or "").lower()
+    return (
+        "ceo_decision_packet" in text
+        or "ceo decision packet" in text
+        or "return compact json only" in text
+        or "return only valid json" in text
+        or "packet_valid" in text
+        or "packet_type" in text
+    )
+
+
 class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     """
     Interactive CLI for the Hermes Agent.
@@ -3377,6 +3392,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        query: str = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -3555,6 +3571,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self.max_turns = 90
         else:
             self.max_turns = 90
+        packet_scoped_query = _is_packet_scoped_query(query)
+        if packet_scoped_query:
+            self.max_turns = min(int(self.max_turns or 90), _PACKET_SCOPED_MAX_TURNS)
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
@@ -3582,7 +3601,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # by `hermes chat --ignore-rules` in hermes_cli/main.py. When true we
         # pass skip_context_files=True and skip_memory=True to AIAgent so
         # AGENTS.md/SOUL.md/.cursorrules and persistent memory are not loaded.
-        self.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
+        self.ignore_rules = (
+            ignore_rules
+            or packet_scoped_query
+            or os.environ.get("HERMES_IGNORE_RULES") == "1"
+        )
         
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
@@ -15003,8 +15026,8 @@ def main(
     checkpoints: bool = False,
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
-    ignore_rules: bool = False,
-):
+        ignore_rules: bool = False,
+    ):
     """
     Hermes Agent CLI - Interactive AI Assistant
     
@@ -15139,6 +15162,7 @@ def main(
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
+        query=query or q,
     )
 
     if parsed_skills:

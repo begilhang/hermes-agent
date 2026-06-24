@@ -110,6 +110,60 @@ def _get_subagent_approval_callback():
         return _subagent_auto_approve
     return _subagent_auto_deny
 
+
+def _load_architecture_overlay(module_name: str):
+    try:
+        from hermes_cli.overlay_loader import load_architecture_overlay
+
+        return load_architecture_overlay(module_name)
+    except Exception as exc:
+        logger.debug("Hermes Architecture v1 overlay %s unavailable: %s", module_name, exc)
+        return None
+
+
+def _is_overlay_route_preflight_only(goal: str) -> bool:
+    overlay = _load_architecture_overlay("delegation_policy")
+    if overlay is not None:
+        try:
+            return bool(overlay.is_route_preflight_only(goal))
+        except Exception:
+            logger.debug("overlay route preflight detector failed", exc_info=True)
+    return "ROUTE_PREFLIGHT_ONLY" in (goal or "").strip().upper()
+
+
+def _is_overlay_autonomous_mission(goal: str) -> bool:
+    overlay = _load_architecture_overlay("autonomy")
+    if overlay is not None:
+        try:
+            return bool(overlay.is_autonomous_mission_prompt(goal))
+        except Exception:
+            logger.debug("overlay autonomous mission detector failed", exc_info=True)
+    return False
+
+
+def _overlay_delegate_result(
+    *,
+    task_index: int,
+    status: str,
+    summary: str,
+    exit_reason: str,
+    child=None,
+    duration_seconds: float = 0.0,
+) -> Dict[str, Any]:
+    return {
+        "task_index": task_index,
+        "status": status,
+        "summary": summary,
+        "api_calls": 0,
+        "duration_seconds": round(duration_seconds, 2),
+        "model": getattr(child, "model", None) if isinstance(getattr(child, "model", None), str) else None,
+        "exit_reason": exit_reason,
+        "tokens": {"input": 0, "output": 0},
+        "tool_trace": [],
+        "_child_role": getattr(child, "_delegate_role", None),
+        "_child_cost_usd": 0.0,
+    }
+
 # Build a description fragment listing toolsets available for subagents.
 # Excludes toolsets where ALL tools are blocked, composite/platform toolsets
 # (hermes-* prefixed), and scenario toolsets.
@@ -1257,6 +1311,11 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    child._delegate_route_profile = "delegated_worker"
+    child._delegate_route_model = effective_model
+    child._delegate_route_provider = effective_provider
+    child._delegate_route_base_url = effective_base_url
+    child._delegate_route_fallback_chain = parent_fallback or []
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -1471,6 +1530,56 @@ def _run_single_child(
     Returns a structured result dict.
     """
     child_start = time.monotonic()
+
+    if _is_overlay_route_preflight_only(goal):
+        overlay = _load_architecture_overlay("route_preflight")
+        if overlay is not None:
+            try:
+                packet = overlay.build_route_preflight_packet_for_route(
+                    effective_profile=getattr(child, "_delegate_route_profile", None)
+                    or "delegated_worker",
+                    effective_model=getattr(child, "_delegate_route_model", None)
+                    or getattr(child, "model", None)
+                    or "",
+                    effective_provider=getattr(child, "_delegate_route_provider", None)
+                    or getattr(child, "provider", None)
+                    or "",
+                    effective_base_url=getattr(child, "_delegate_route_base_url", None)
+                    or getattr(child, "base_url", None)
+                    or "",
+                    fallback_entries=getattr(child, "_delegate_route_fallback_chain", []) or [],
+                    surface="delegate_task",
+                )
+                return _overlay_delegate_result(
+                    task_index=task_index,
+                    status="completed",
+                    summary=str(packet),
+                    exit_reason="route_preflight",
+                    child=child,
+                    duration_seconds=time.monotonic() - child_start,
+                )
+            except Exception as exc:
+                logger.debug("overlay delegate route preflight failed: %s", exc, exc_info=True)
+
+    if _is_overlay_autonomous_mission(goal):
+        overlay = _load_architecture_overlay("autonomy")
+        if overlay is not None:
+            try:
+                final_report = overlay.maybe_run_autonomous_mission(
+                    goal,
+                    surface="delegate_task",
+                )
+                if final_report is not None:
+                    return _overlay_delegate_result(
+                        task_index=task_index,
+                        status="completed",
+                        summary=str(final_report),
+                        exit_reason="autonomous_mission",
+                        child=child,
+                        duration_seconds=time.monotonic() - child_start,
+                    )
+            except Exception as exc:
+                logger.debug("overlay delegate autonomous mission failed: %s", exc, exc_info=True)
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)

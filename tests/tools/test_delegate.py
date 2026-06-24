@@ -32,6 +32,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _run_single_child,
 )
 
 
@@ -178,6 +179,53 @@ class TestDelegateTask(unittest.TestCase):
         parent = _make_mock_parent()
         result = json.loads(delegate_task(goal="  ", parent_agent=parent))
         self.assertIn("error", result)
+
+    def test_route_preflight_goal_short_circuits_child_model(self):
+        child = MagicMock()
+        child.model = "deepseek/deepseek-v4-flash"
+        child.provider = "custom"
+        child.base_url = "https://openrouter.ai/api/v1"
+        child._delegate_route_profile = "global_orchestrator"
+        child._delegate_route_model = "deepseek/deepseek-v4-flash"
+        child._delegate_route_provider = "custom"
+        child._delegate_route_base_url = "https://openrouter.ai/api/v1"
+        child._delegate_route_fallback_chain = [
+            {"provider": "openrouter", "model": "deepseek/deepseek-v4-flash"},
+            {"provider": "deepseek", "model": "deepseek-v4-flash"},
+        ]
+        child._delegate_role = "leaf"
+
+        result = _run_single_child(
+            0,
+            "ROUTE_PREFLIGHT_ONLY. Return only valid JSON.",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+        packet = json.loads(result["summary"])
+
+        self.assertEqual(result["exit_reason"], "route_preflight")
+        self.assertEqual(result["api_calls"], 0)
+        self.assertEqual(packet["effective_provider"], "openrouter")
+        child.run_conversation.assert_not_called()
+
+    def test_autonomous_mission_goal_short_circuits_child_model(self):
+        child = MagicMock()
+        child.model = "deepseek/deepseek-v4-flash"
+        child.provider = "openrouter"
+        child.base_url = "https://openrouter.ai/api/v1"
+        child._delegate_role = "leaf"
+
+        result = _run_single_child(
+            0,
+            "AUTONOMOUS_MISSION: generic no-op. Return final report only.",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["exit_reason"], "autonomous_mission")
+        self.assertEqual(result["api_calls"], 0)
+        self.assertTrue(result["summary"].startswith("Gate:"))
+        child.run_conversation.assert_not_called()
 
     def test_task_missing_goal(self):
         parent = _make_mock_parent()

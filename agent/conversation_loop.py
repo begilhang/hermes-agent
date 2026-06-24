@@ -523,6 +523,42 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
+    try:
+        from hermes_cli.overlay_loader import load_architecture_overlay
+
+        overlay_autonomy = load_architecture_overlay("autonomy")
+        handled = overlay_autonomy.maybe_run_autonomous_mission(
+            user_message,
+            surface="conversation_loop",
+        )
+    except Exception:
+        handled = None
+    if handled is not None:
+        if isinstance(handled, dict):
+            final_response = str(handled.get("final_response") or "")
+            if stream_callback and final_response:
+                try:
+                    stream_callback(final_response)
+                except Exception:
+                    logger.debug("autonomous mission stream_callback failed", exc_info=True)
+            return handled
+        final_response = str(handled)
+        if stream_callback and final_response:
+            try:
+                stream_callback(final_response)
+            except Exception:
+                logger.debug("autonomous mission stream_callback failed", exc_info=True)
+        return {
+            "completed": True,
+            "final_response": final_response,
+            "messages": [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": final_response},
+            ],
+            "api_calls": 0,
+            "exit_reason": "autonomous_mission",
+        }
+
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-

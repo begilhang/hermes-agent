@@ -140,6 +140,36 @@ def run_oneshot(
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
+    if (prompt or "").strip().upper().startswith("ROUTE_PREFLIGHT_ONLY"):
+        try:
+            from hermes_cli.overlay_loader import load_architecture_overlay
+
+            overlay_route = load_architecture_overlay("route_preflight")
+            packet = overlay_route.build_route_preflight_packet(surface="cli")
+            sys.stdout.write(str(packet))
+            if not str(packet).endswith("\n"):
+                sys.stdout.write("\n")
+            sys.stdout.flush()
+            return 0
+        except Exception as exc:
+            sys.stderr.write(f"hermes -z: route preflight overlay failed: {exc}\n")
+            sys.stderr.flush()
+            return 1
+
+    try:
+        from hermes_cli.overlay_loader import load_architecture_overlay
+
+        overlay_autonomy = load_architecture_overlay("autonomy")
+        handled = overlay_autonomy.maybe_run_autonomous_mission(prompt, surface="oneshot")
+    except Exception:
+        handled = None
+    if handled is not None:
+        sys.stdout.write(str(handled))
+        if not str(handled).endswith("\n"):
+            sys.stdout.write("\n")
+        sys.stdout.flush()
+        return 0
+
     # Silence every stdlib logger for the duration.  AIAgent, tools, and
     # provider adapters all log to stderr through the root logger; file
     # handlers added by setup_logging() keep working (they're attached to

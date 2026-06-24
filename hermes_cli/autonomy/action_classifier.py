@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from .policy import AutonomyContract, AutonomyDecision
 from .mission_text import requested_action_text
@@ -82,7 +83,12 @@ def _is_external_or_irreversible(text: str) -> bool:
         "post to",
         "deploy",
         "deployment",
-        "publish",
+        "publish/export",
+        "publish when done",
+        "publish to",
+        "publish the",
+        "publish book",
+        "publish manuscript",
         "export for publication",
         "payment",
         "account action",
@@ -96,7 +102,9 @@ def _is_external_or_irreversible(text: str) -> bool:
         "bypass gate",
         "bypass ai reader",
     )
-    return any(k in text for k in keywords)
+    if any(k in text for k in keywords):
+        return True
+    return bool(re.search(r"\bexport\b", text) and not re.search(r"\b(import|export json|exported report)\b", text))
 
 
 def _looks_like_broad_manuscript_rewrite(text: str) -> bool:

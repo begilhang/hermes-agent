@@ -63,6 +63,23 @@ Forbidden:
     assert action.decision is AutonomyDecision.AUTO
 
 
+def test_action_classifier_ignores_may_not_boundary_bullets_as_requested_actions():
+    contract = default_contract()
+    mission = """Diagnose and fix the BookForge Chapter 28 context-budget failure.
+
+Mission boundary:
+- You may inspect BookForge engine/config/test code.
+- You may patch bounded engine/config/test/docs code to fix the context-budget failure.
+- You may not resume generation.
+- You may not publish/export.
+- You may not delete caches/models/secrets.
+"""
+
+    action = classify_action(mission, contract, mission_goal=mission)
+
+    assert action.decision is AutonomyDecision.AUTO
+
+
 def test_action_classifier_quarantines_affirmative_publish_request():
     contract = default_contract()
     action = classify_action(

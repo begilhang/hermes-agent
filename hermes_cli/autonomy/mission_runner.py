@@ -155,6 +155,7 @@ class AutonomousMissionRunner:
         context_msg = _extract_context_budget_message(status, queue)
         gate_summary = _extract_ai_reader_summary(chapter_item)
         cap_sources = self._inspect_context_cap_sources()
+        repair_requested = _mission_requests_bounded_engine_fix(self.envelope.goal)
         self.actions.extend(
             [
                 "Diagnosed BookForge Chapter 28 queue/status state.",
@@ -164,7 +165,10 @@ class AutonomousMissionRunner:
                 "Produced non-mutating repair plan; no generation, resume, prose repair, or mutation performed.",
             ]
         )
-        self.repairs.append("No repair executed; mission is diagnosis/planning unless engine/config repair is explicitly in envelope.")
+        if repair_requested:
+            self._record_bounded_context_budget_repair_blocker(cap_sources)
+        else:
+            self.repairs.append("No repair executed; mission is diagnosis/planning unless engine/config repair is explicitly in envelope.")
         self.verification.append("Confirmed BookForge worker is idle or not running before planning output.")
         self._verify_prose_snapshots(prose_snapshots)
         source_summary = "; ".join(cap_sources[:4]) if cap_sources else "cap source not found"
@@ -292,6 +296,20 @@ class AutonomousMissionRunner:
             if not seen[key]:
                 self.verification.append(f"{label} check skipped; file not found.")
 
+    def _record_bounded_context_budget_repair_blocker(self, cap_sources: list[str]) -> None:
+        source_summary = "; ".join(cap_sources[:3]) if cap_sources else "no engine/config source found"
+        self.repairs.append(
+            "bounded engine/config repair was requested and is inside the mission envelope, "
+            "but no automatic source patch was applied in this runner. The safe fix target is "
+            "publish-readiness prompt assembly/context summarization rather than a blind "
+            "`BOOKFORGE_CTX` increase. Exact candidate sources: "
+            f"{source_summary}."
+        )
+        self.verification.append(
+            "Bounded engine/config repair blocked before code mutation because no deterministic "
+            "patch recipe is implemented for publish-readiness context summarization in this runner."
+        )
+
 
 def _clean_goal(goal: str) -> str:
     text = (goal or "").strip()
@@ -319,6 +337,22 @@ def _render_envelope_yaml(envelope: MissionEnvelope) -> str:
 def _looks_like_bookforge_chapter_28(goal: str) -> bool:
     goal_l = (goal or "").lower()
     return "bookforge" in goal_l and "chapter 28" in goal_l
+
+
+def _mission_requests_bounded_engine_fix(goal: str) -> bool:
+    goal_l = (goal or "").lower()
+    if not ("fix" in goal_l or "patch" in goal_l or "repair" in goal_l):
+        return False
+    return any(
+        marker in goal_l
+        for marker in (
+            "engine/config",
+            "engine config",
+            "config/test",
+            "context-budget",
+            "context budget",
+        )
+    )
 
 
 def _find_chapter_item(queue: Any, chapter: int) -> dict[str, Any] | None:

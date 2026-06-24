@@ -8,6 +8,22 @@ SECTION_HEADERS = (
     "still forbidden:",
 )
 
+NEGATED_BOUNDARY_MARKERS = (
+    "do not ",
+    "don't ",
+    "dont ",
+    "must not ",
+    "you must not ",
+    "may not ",
+    "you may not ",
+    "cannot ",
+    "you cannot ",
+    "can't ",
+    "you can't ",
+    "forbidden ",
+    "no ",
+)
+
 
 def requested_action_text(text: str) -> str:
     """Return the affirmative/requested part of a mission prompt.
@@ -25,5 +41,12 @@ def requested_action_text(text: str) -> str:
         idx = lower.find(header)
         if idx >= 0:
             cut = min(cut, idx)
-    return raw[:cut].strip() or raw.strip()
-
+    candidate = raw[:cut].strip() or raw.strip()
+    kept: list[str] = []
+    for line in candidate.splitlines():
+        normalized = line.strip().lstrip("-*•").strip().lower()
+        if any(normalized.startswith(marker) for marker in NEGATED_BOUNDARY_MARKERS):
+            continue
+        kept.append(line)
+    cleaned = "\n".join(kept).strip()
+    return cleaned or candidate

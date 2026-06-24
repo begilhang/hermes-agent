@@ -156,3 +156,61 @@ def test_chapter_28_fix_mission_locates_context_cap_source_and_preserves_prose(
     assert "Chapter 15 prose unchanged" in report
     assert ch28.read_text() == before[str(ch28)]
     assert ch15.read_text() == before[str(ch15)]
+
+
+def test_chapter_28_fix_mission_with_forbidden_boundaries_does_not_self_quarantine(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "Bookforge V2 PublicationForge"
+    config = repo / "bookforge" / "core"
+    config.mkdir(parents=True)
+    cap_file = config / "config.py"
+    cap_file.write_text(
+        'MODEL_CONTEXT_WINDOW = int(os.getenv("BOOKFORGE_CTX", "24576"))\n',
+        encoding="utf-8",
+    )
+    context_budget = config / "context_budget.py"
+    context_budget.write_text(
+        "class ContextBudgetExceeded(RuntimeError):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    chapters = repo / "projects" / "the_black_beacon_directive" / "chapters"
+    chapters.mkdir(parents=True)
+    ch28 = chapters / "chapter_28.md"
+    ch15 = chapters / "chapter_15.draft.md"
+    ch28.write_text("chapter 28 prose", encoding="utf-8")
+    ch15.write_text("chapter 15 prose", encoding="utf-8")
+
+    monkeypatch.setattr(mission_runner_mod, "BOOKFORGE_REPO_ROOT", str(repo))
+    monkeypatch.setattr(
+        mission_runner_mod,
+        "BOOKFORGE_PROJECT_ROOT",
+        str(repo / "projects" / "the_black_beacon_directive"),
+    )
+
+    runner = AutonomousMissionRunner(
+        """AUTONOMOUS_MISSION:
+Diagnose and fix the BookForge Chapter 28 context-budget failure.
+
+Mission boundary:
+- You may inspect BookForge engine/config/test code.
+- You may patch bounded engine/config/test/docs code to fix the context-budget failure.
+- You may run tests and read-only BookForge status checks.
+- You may not resume generation.
+- You may not mutate chapter prose.
+- You may not publish/export.
+- You may not modify Chapter 15.
+- You may not delete caches/models/secrets.
+""",
+        run_root=tmp_path / "runs",
+        sources=FakeSources(),
+    )
+
+    report = runner.run()
+
+    assert not report.startswith("Gate: QUARANTINED")
+    assert "No repair executed" not in report
+    assert "bounded engine/config repair" in report
+    assert "Chapter 28 prose unchanged" in report
+    assert "Chapter 15 prose unchanged" in report

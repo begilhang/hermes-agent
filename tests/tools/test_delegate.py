@@ -34,6 +34,7 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
     _load_target_profile_contract,
+    _run_single_child,
 )
 
 
@@ -76,6 +77,28 @@ class TestDelegateRequirements(unittest.TestCase):
         # predictable budgets.
         self.assertNotIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+
+    @patch("hermes_cli.autonomy.mission_runner.AutonomousMissionRunner")
+    def test_autonomous_mission_child_uses_runner_without_model_call(self, mock_runner_cls):
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = "Gate: PASS\n\nMission:\nAUTONOMOUS_MISSION: test\n"
+        mock_runner_cls.return_value = mock_runner
+        child = MagicMock()
+        child.model = "deepseek/deepseek-v4-flash"
+        child._delegate_role = "leaf"
+
+        result = _run_single_child(
+            0,
+            "AUTONOMOUS_MISSION: test final report only",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["exit_reason"], "autonomous_mission")
+        self.assertEqual(result["api_calls"], 0)
+        self.assertTrue(result["summary"].startswith("Gate: PASS"))
+        child.run_conversation.assert_not_called()
 
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,

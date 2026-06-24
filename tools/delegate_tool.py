@@ -357,6 +357,16 @@ def _is_route_preflight_goal(goal: str) -> bool:
     return "ROUTE_PREFLIGHT_ONLY" in text
 
 
+def _is_autonomous_mission_goal(goal: str) -> bool:
+    text = (goal or "").lower()
+    return (
+        text.strip().startswith("autonomous_mission:")
+        or "autonomous mode" in text
+        or "return final report only" in text
+        or "final_report_only" in text
+    )
+
+
 def _delegation_fallback_chain(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Fallback entries for delegated tool workers.
 
@@ -1698,6 +1708,34 @@ def _run_single_child(
     Returns a structured result dict.
     """
     child_start = time.monotonic()
+
+    if _is_autonomous_mission_goal(goal):
+        try:
+            from hermes_cli.autonomy.mission_runner import AutonomousMissionRunner
+
+            summary = AutonomousMissionRunner(goal).run()
+            return {
+                "task_index": task_index,
+                "status": "completed",
+                "summary": summary,
+                "api_calls": 0,
+                "duration_seconds": round(time.monotonic() - child_start, 2),
+                "model": getattr(child, "model", None) if child is not None else None,
+                "exit_reason": "autonomous_mission",
+                "tokens": {"input": 0, "output": 0},
+                "tool_trace": [],
+                "_child_role": getattr(child, "_delegate_role", None) if child is not None else None,
+            }
+        except Exception as exc:
+            return {
+                "task_index": task_index,
+                "status": "error",
+                "summary": None,
+                "error": f"autonomous mission runner failed: {exc}",
+                "api_calls": 0,
+                "duration_seconds": round(time.monotonic() - child_start, 2),
+                "_child_role": getattr(child, "_delegate_role", None) if child is not None else None,
+            }
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)

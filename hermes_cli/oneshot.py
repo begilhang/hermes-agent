@@ -51,6 +51,16 @@ def _is_packet_scoped_prompt(prompt: str) -> bool:
     )
 
 
+def _is_autonomous_mission_prompt(prompt: str) -> bool:
+    text = (prompt or "").lower()
+    return (
+        text.strip().startswith("autonomous_mission:")
+        or "autonomous mode" in text
+        or "return final report only" in text
+        or "final_report_only" in text
+    )
+
+
 def _configured_max_iterations(config: dict, prompt: str) -> int:
     agent_cfg = config.get("agent") if isinstance(config.get("agent"), dict) else {}
     raw = agent_cfg.get("max_turns")
@@ -213,6 +223,12 @@ def run_oneshot(
 
         sys.stdout.write(build_route_preflight_packet(load_config(), surface="cli"))
         sys.stdout.write("\n")
+        sys.stdout.flush()
+        return 0
+    if _is_autonomous_mission_prompt(prompt):
+        from hermes_cli.autonomy.mission_runner import AutonomousMissionRunner
+
+        sys.stdout.write(AutonomousMissionRunner(prompt).run())
         sys.stdout.flush()
         return 0
 

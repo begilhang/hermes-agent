@@ -84,6 +84,60 @@ def test_delegate_route_preflight_returns_packet_without_model_call():
     assert packet["surface"] == "delegate_task"
 
 
+def test_delegate_route_preflight_preserves_configured_provider_metadata():
+    from tools.delegate_tool import _run_single_child
+
+    child = RoutePreflightChild()
+    child.provider = "custom"
+    child.base_url = "https://openrouter.ai/api/v1"
+    child.model = "deepseek/deepseek-v4-flash"
+    child._delegate_route_model = "deepseek/deepseek-v4-flash"
+    child._delegate_route_provider = "openrouter"
+    child._delegate_route_base_url = "https://openrouter.ai/api/v1"
+    child._delegate_route_fallback_chain = [
+        {
+            "provider": "openrouter",
+            "model": "deepseek/deepseek-v4-flash",
+            "base_url": "https://openrouter.ai/api/v1",
+        },
+        {
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "base_url": "https://api.deepseek.com/v1",
+        },
+        {
+            "provider": "custom:omlx-local",
+            "model": "Qwopus3.6-27B-v2-oQ4-mtp",
+            "base_url": "http://127.0.0.1:8001/v1",
+        },
+    ]
+
+    result = _run_single_child(
+        0,
+        "ROUTE_PREFLIGHT_ONLY. Return only valid JSON.",
+        child=child,
+        parent_agent=None,
+    )
+
+    packet = json.loads(result["summary"])
+    assert result["status"] == "completed"
+    assert result["api_calls"] == 0
+    assert child.run_conversation_called is False
+    assert packet["route_gate"] == "ROUTE_PASS"
+    assert packet["effective_profile"] == "global_orchestrator"
+    assert packet["effective_model"] == "deepseek/deepseek-v4-flash"
+    assert packet["effective_provider"] == "openrouter"
+    assert packet["effective_base_url"] == "https://openrouter.ai/api/v1"
+    assert packet["fallback_chain"] == [
+        "openrouter_deepseek",
+        "direct_deepseek",
+        "custom_omlx-local_qwopus3.6-27b-v2-oq4-mtp",
+    ]
+    assert packet["forbidden_fallback_detected"] is False
+    assert packet["secrets_printed"] is False
+    assert packet["surface"] == "delegate_task"
+
+
 def test_delegate_route_preflight_fails_closed_on_forbidden_worker_fallback():
     from tools.delegate_tool import _run_single_child
 

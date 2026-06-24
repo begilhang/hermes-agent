@@ -384,9 +384,21 @@ def _route_preflight_entry(
     duration = round(time.monotonic() - child_start, 2)
     summary = build_route_preflight_packet_for_route(
         effective_profile=getattr(child, "_delegate_route_profile", None) or "delegated_worker",
-        effective_model=getattr(child, "model", None) or "",
-        effective_provider=getattr(child, "provider", None) or "",
-        effective_base_url=getattr(child, "base_url", None) or "",
+        effective_model=(
+            getattr(child, "_delegate_route_model", None)
+            or getattr(child, "model", None)
+            or ""
+        ),
+        effective_provider=(
+            getattr(child, "_delegate_route_provider", None)
+            or getattr(child, "provider", None)
+            or ""
+        ),
+        effective_base_url=(
+            getattr(child, "_delegate_route_base_url", None)
+            or getattr(child, "base_url", None)
+            or ""
+        ),
         fallback_entries=getattr(child, "_delegate_route_fallback_chain", None) or [],
         surface="delegate_task",
     )
@@ -1077,6 +1089,12 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Policy-facing route metadata for route preflight. The runtime transport may
+    # normalize URL-based providers to "custom"; preflight should still report the
+    # configured/provider-policy route the orchestrator selected.
+    route_model: Optional[str] = None,
+    route_provider: Optional[str] = None,
+    route_base_url: Optional[str] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1349,6 +1367,15 @@ def _build_child_agent(
     child._delegate_route_profile = (
         str(delegation_cfg.get("profile") or delegation_cfg.get("target_profile") or "delegated_worker").strip()
         or "delegated_worker"
+    )
+    child._delegate_route_model = (
+        route_model or getattr(child, "model", None) or effective_model
+    )
+    child._delegate_route_provider = (
+        route_provider or getattr(child, "provider", None) or effective_provider
+    )
+    child._delegate_route_base_url = (
+        route_base_url or getattr(child, "base_url", None) or effective_base_url
     )
     child._delegate_route_fallback_chain = delegation_fallback
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
@@ -2444,6 +2471,9 @@ def delegate_task(
                     if task_acp_args is not None
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
+                route_model=creds.get("route_model"),
+                route_provider=creds.get("route_provider"),
+                route_base_url=creds.get("route_base_url"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -2973,6 +3003,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "route_model": configured_model,
+            "route_provider": configured_provider or provider,
+            "route_base_url": configured_base_url,
         }
 
     if not configured_provider:
@@ -2983,6 +3016,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": None,
             "api_key": None,
             "api_mode": None,
+            "route_model": configured_model,
+            "route_provider": None,
+            "route_base_url": None,
         }
 
     # Provider is configured — resolve full credentials
@@ -3013,6 +3049,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
+        "route_model": configured_model or runtime.get("model") or None,
+        "route_provider": configured_provider if configured_provider else runtime.get("provider"),
+        "route_base_url": runtime.get("base_url"),
     }
 
 

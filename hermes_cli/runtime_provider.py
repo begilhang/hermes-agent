@@ -791,10 +791,15 @@ def _normalize_base_url_for_match(value) -> str:
 
 
 def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[str, Any]:
+    overrides = custom_provider.get("request_overrides")
+    result = dict(overrides) if isinstance(overrides, dict) else {}
     extra_body = custom_provider.get("extra_body")
-    if not isinstance(extra_body, dict) or not extra_body:
-        return {}
-    return {"extra_body": dict(extra_body)}
+    if isinstance(extra_body, dict) and extra_body:
+        result["extra_body"] = {
+            **dict(result.get("extra_body") or {}),
+            **dict(extra_body),
+        }
+    return result
 
 
 def _resolve_named_custom_runtime(

@@ -348,6 +348,88 @@ def _looks_like_error_output(content: Any) -> bool:
     )
 
 
+def _is_route_preflight_goal(goal: str) -> bool:
+    """Return True when a delegated child should prove its route, not ask an LLM."""
+    text = (goal or "").strip().lower()
+    if not text:
+        return False
+    return "route_preflight_only" in text or "route preflight" in text or "route-preflight" in text
+
+
+def _delegation_fallback_chain(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Fallback entries for delegated tool workers.
+
+    Delegation config is intentionally separate from the Brain CEO's own model
+    route. A tool worker must not silently inherit GPT-5.5/OpenAI-Codex as a
+    fallback, so this chain is copied onto each child and used by route preflight.
+    """
+    try:
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        return get_fallback_chain(cfg)
+    except Exception:
+        return []
+
+
+def _route_preflight_entry(
+    *,
+    task_index: int,
+    goal: str,
+    child: Any,
+    child_start: float,
+) -> Dict[str, Any]:
+    """Build a normal subagent result for deterministic route preflight."""
+    from hermes_cli.route_preflight import build_route_preflight_packet_for_route
+
+    duration = round(time.monotonic() - child_start, 2)
+    summary = build_route_preflight_packet_for_route(
+        effective_profile=getattr(child, "_delegate_route_profile", None) or "delegated_worker",
+        effective_model=getattr(child, "model", None) or "",
+        effective_provider=getattr(child, "provider", None) or "",
+        effective_base_url=getattr(child, "base_url", None) or "",
+        fallback_entries=getattr(child, "_delegate_route_fallback_chain", None) or [],
+        surface="delegate_task",
+    )
+    try:
+        parsed = json.loads(summary)
+        route_gate = str(parsed.get("route_gate") or "")
+    except Exception:
+        route_gate = "ROUTE_FAIL"
+    status = "completed" if route_gate == "ROUTE_PASS" else "failed"
+    entry: Dict[str, Any] = {
+        "task_index": task_index,
+        "status": status,
+        "summary": summary,
+        "api_calls": 0,
+        "duration_seconds": duration,
+        "model": getattr(child, "model", None) if isinstance(getattr(child, "model", None), str) else None,
+        "exit_reason": "route_preflight",
+        "tokens": {"input": 0, "output": 0},
+        "tool_trace": [],
+        "_child_role": getattr(child, "_delegate_role", None),
+    }
+    if status != "completed":
+        entry["error"] = summary
+    return entry
+
+
+def _packet_repair_prompt(goal: str, invalid_summary: str, reason: str) -> str:
+    """Return a compact repair prompt for packet-scoped delegated work."""
+    return (
+        "REPAIR_PREVIOUS_INVALID_OUTPUT.\n"
+        "Your previous delegated output failed the deterministic packet gate.\n\n"
+        f"Original task:\n{goal}\n\n"
+        f"Failure reason:\n{reason}\n\n"
+        "Return the completed packet only. Do not narrate commands, plans, or intent. "
+        "Do not include raw dumps. If evidence is inaccessible, mark it as "
+        "ACCESS_FAILED inside the packet with a short reason. Do not recommend "
+        "generation, resume, repair, risk acceptance, or external action unless "
+        "the original task explicitly approved it.\n\n"
+        "Invalid previous output excerpt:\n"
+        f"{(invalid_summary or '')[:1200]}"
+    )
+
+
 def _normalize_role(r: Optional[str]) -> str:
     """Normalise a caller-provided role to 'leaf' or 'orchestrator'.
 
@@ -1189,11 +1271,13 @@ def _build_child_agent(
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
-    # Inherit the parent's fallback provider chain so subagents can recover
-    # from rate-limits and credential exhaustion exactly like the top-level
-    # agent does.  _fallback_chain is a list accepted by AIAgent's
-    # fallback_model parameter (which handles both list and dict forms).
+    # Delegated workers use their own explicit fallback chain. This prevents a
+    # Brain CEO parent from leaking GPT-5.5/OpenAI-Codex into worker fallback.
+    # If no delegation-specific chain is configured, preserve the historic
+    # parent-inheritance behavior.
+    delegation_fallback = _delegation_fallback_chain(delegation_cfg)
     parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    child_fallback = delegation_fallback or parent_fallback
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1228,7 +1312,7 @@ def _build_child_agent(
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
-        fallback_model=parent_fallback,
+        fallback_model=child_fallback,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
@@ -1262,6 +1346,11 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._delegate_route_profile = (
+        str(delegation_cfg.get("profile") or delegation_cfg.get("target_profile") or "delegated_worker").strip()
+        or "delegated_worker"
+    )
+    child._delegate_route_fallback_chain = delegation_fallback
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
@@ -1614,6 +1703,33 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback start failed: %s", e)
 
+        if _is_route_preflight_goal(goal):
+            entry = _route_preflight_entry(
+                task_index=task_index,
+                goal=goal,
+                child=child,
+                child_start=child_start,
+            )
+            if child_progress_cb:
+                try:
+                    child_progress_cb(
+                        "subagent.complete",
+                        preview=entry.get("summary", "")[:160],
+                        status=entry.get("status", "completed"),
+                        duration_seconds=entry.get("duration_seconds", 0),
+                        summary=entry.get("summary", "")[:500],
+                        input_tokens=0,
+                        output_tokens=0,
+                        reasoning_tokens=0,
+                        api_calls=0,
+                        files_read=[],
+                        files_written=[],
+                        output_tail=[],
+                    )
+                except Exception as e:
+                    logger.debug("Progress callback route-preflight relay failed: %s", e)
+            return entry
+
         # File-state coordination: reuse the stable subagent_id as the child's
         # task_id so file_state writes, active-subagents registry, and TUI
         # events all share one key.  Falls back to a fresh uuid only if the
@@ -1777,9 +1893,86 @@ def _run_single_child(
         completed = result.get("completed", False)
         interrupted = result.get("interrupted", False)
         api_calls = result.get("api_calls", 0)
+        packet_gate_payload: Optional[Dict[str, Any]] = None
+        packet_repair_attempted = False
+
+        try:
+            from hermes_cli.packet_validation import (
+                invalid_packet_payload,
+                validate_delegated_output,
+            )
+
+            packet_result = validate_delegated_output(goal, summary)
+        except Exception as exc:
+            packet_result = None
+            logger.warning("Delegated packet validation failed open due internal error: %s", exc)
+
+        if (
+            packet_result is not None
+            and not packet_result.valid
+            and not interrupted
+            and summary
+        ):
+            packet_repair_attempted = True
+            repair_prompt = _packet_repair_prompt(goal, summary, packet_result.reason)
+            logger.warning(
+                "Delegated output failed packet gate for task %s: %s; attempting one repair",
+                task_index,
+                packet_result.reason,
+            )
+            try:
+                repair_result = child.run_conversation(
+                    user_message=repair_prompt,
+                    task_id=child_task_id,
+                    stream_callback=_relay_child_text,
+                )
+                summary = repair_result.get("final_response") or ""
+                completed = repair_result.get("completed", False)
+                interrupted = repair_result.get("interrupted", False)
+                api_calls = int(api_calls or 0) + int(repair_result.get("api_calls", 0) or 0)
+                if isinstance(result.get("messages"), list) and isinstance(repair_result.get("messages"), list):
+                    result["messages"] = result.get("messages", []) + repair_result.get("messages", [])
+                result["final_response"] = summary
+                result["completed"] = completed
+                result["interrupted"] = interrupted
+                result["api_calls"] = api_calls
+                packet_result = validate_delegated_output(goal, summary)
+            except Exception as exc:
+                packet_result = packet_result or None
+                packet_gate_payload = invalid_packet_payload(
+                    packet_result,
+                    repair_attempted=True,
+                ) if packet_result is not None else {
+                    "packet_gate": "PACKET_INVALID",
+                    "valid": False,
+                    "reason": f"packet repair raised {type(exc).__name__}: {exc}",
+                    "repair_attempted": True,
+                }
+                summary = ""
+                completed = False
+                interrupted = False
+                result["error"] = packet_gate_payload["reason"]
+
+        if packet_result is not None:
+            if packet_result.valid:
+                packet_gate_payload = {
+                    "packet_gate": packet_result.code,
+                    "valid": True,
+                    "reason": packet_result.reason,
+                    "repair_attempted": packet_repair_attempted,
+                }
+            elif not packet_gate_payload:
+                packet_gate_payload = invalid_packet_payload(
+                    packet_result,
+                    repair_attempted=packet_repair_attempted,
+                )
+                summary = ""
+                completed = False
 
         if interrupted:
             status = "interrupted"
+        elif packet_gate_payload and packet_gate_payload.get("valid") is False:
+            status = "failed"
         elif summary:
             # A summary means the subagent produced usable output.
             # exit_reason ("completed" vs "max_iterations") already
@@ -1829,6 +2022,8 @@ def _run_single_child(
             exit_reason = "interrupted"
         elif completed:
             exit_reason = "completed"
+        elif packet_gate_payload and packet_gate_payload.get("valid") is False:
+            exit_reason = "packet_invalid"
         else:
             exit_reason = "max_iterations"
 
@@ -1840,7 +2035,7 @@ def _run_single_child(
         entry: Dict[str, Any] = {
             "task_index": task_index,
             "status": status,
-            "summary": summary,
+            "summary": None if status == "failed" else summary,
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
@@ -1872,8 +2067,13 @@ def _run_single_child(
                 else 0.0
             ),
         }
+        if packet_gate_payload is not None:
+            entry["packet_gate"] = packet_gate_payload
         if status == "failed":
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
+            if packet_gate_payload and packet_gate_payload.get("valid") is False:
+                entry["error"] = json.dumps(packet_gate_payload, sort_keys=True)
+            else:
+                entry["error"] = result.get("error", "Subagent did not produce a response.")
 
         # Cross-agent file-state reminder.  If this subagent wrote any
         # files the parent had already read, surface it so the parent
@@ -2739,18 +2939,26 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         from hermes_cli.runtime_provider import _detect_api_mode_for_url
 
         base_lower = configured_base_url.lower()
+        # A configured base_url is a direct endpoint override. Treat it as a
+        # custom route even if a stale provider label is also present; otherwise
+        # a local/OpenAI-compatible worker can accidentally inherit provider
+        # routing behavior (for example OpenRouter) that does not match the
+        # endpoint. Provider identity is auto-detected only when no provider
+        # label was supplied.
         provider = "custom"
         api_mode = _detect_api_mode_for_url(configured_base_url) or "chat_completions"
         if (
+            not configured_provider
+            and
             base_url_hostname(configured_base_url) == "chatgpt.com"
             and "/backend-api/codex" in base_lower
         ):
             provider = "openai-codex"
             api_mode = "codex_responses"
-        elif base_url_hostname(configured_base_url) == "api.anthropic.com":
+        elif not configured_provider and base_url_hostname(configured_base_url) == "api.anthropic.com":
             provider = "anthropic"
             api_mode = "anthropic_messages"
-        elif "api.kimi.com/coding" in base_lower:
+        elif not configured_provider and "api.kimi.com/coding" in base_lower:
             provider = "custom"
             api_mode = "anthropic_messages"
 

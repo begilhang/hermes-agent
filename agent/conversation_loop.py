@@ -523,6 +523,54 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
+    if (user_message or "").strip().upper().startswith("ROUTE_PREFLIGHT_ONLY"):
+        from hermes_cli.fallback_config import get_fallback_chain
+        from hermes_cli.route_preflight import build_route_preflight_packet_for_route
+
+        fallback_entries = getattr(agent, "_fallback_chain", None) or []
+        if not fallback_entries:
+            try:
+                from hermes_cli.config import load_config
+
+                fallback_entries = get_fallback_chain(load_config())
+            except Exception:
+                fallback_entries = []
+
+        surface = str(getattr(agent, "platform", None) or "session").strip() or "session"
+        profile_label = str(
+            getattr(agent, "_route_preflight_profile", None)
+            or os.getenv("HERMES_ROUTE_PREFLIGHT_PROFILE")
+            or ""
+        ).strip()
+        if not profile_label:
+            try:
+                from pathlib import Path
+
+                home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+                if home.parent.name == "profiles" and home.name:
+                    profile_label = home.name
+            except Exception:
+                profile_label = ""
+
+        final_response = build_route_preflight_packet_for_route(
+            effective_profile=profile_label,
+            effective_model=str(getattr(agent, "model", None) or ""),
+            effective_provider=str(getattr(agent, "provider", None) or ""),
+            effective_base_url=str(getattr(agent, "base_url", None) or ""),
+            fallback_entries=fallback_entries,
+            surface=surface,
+        )
+        return {
+            "completed": True,
+            "final_response": final_response,
+            "messages": [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": final_response},
+            ],
+            "api_calls": 0,
+            "exit_reason": "route_preflight",
+        }
+
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-

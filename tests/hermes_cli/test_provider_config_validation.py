@@ -102,6 +102,19 @@ class TestNormalizeCustomProviderEntry:
         assert result is not None
         assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
 
+    def test_request_overrides_not_flagged_unknown(self, caplog):
+        """Provider request_overrides are supported runtime config."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "api_key": "***",
+            "request_overrides": {"temperature": 0.1, "top_p": 0.8},
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert result["request_overrides"] == {"temperature": 0.1, "top_p": 0.8}
+        assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
+
     def test_camel_case_warning_logged(self, caplog):
         """camelCase alias mapping should produce a warning."""
         entry = {

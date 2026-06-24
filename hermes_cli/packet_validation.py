@@ -31,12 +31,23 @@ PENDING_EVIDENCE_PATTERNS = (
     re.compile(r"\bto be (read|polled|checked|inspected)\b", re.I),
     re.compile(r"\b(files|artifacts) inspected:\s*none\b", re.I),
     re.compile(r"\bverification run:\s*none\b", re.I),
+    re.compile(r"\bif (?:paths?|sources?|artifacts?)\b.{0,80}\b(discoverable|available|found)\b", re.I),
 )
 
 TOOL_NARRATION_PATTERNS = (
     re.compile(r"\bI (will|would|am going to|need to) (run|read|inspect|check)\b", re.I),
     re.compile(r"\bLet me (run|read|inspect|check)\b", re.I),
     re.compile(r"\bRan command\b", re.I),
+)
+
+CONCRETE_EVIDENCE_PATTERNS = (
+    re.compile(r"\bACCESS_FAILED\b", re.I),
+    re.compile(r"\b(reachable|unreachable)\b", re.I),
+    re.compile(r"\b(?:response|status|queue|packet|preflight)\b.{0,40}\b(?:reports|says|shows|returned|contains)\b", re.I),
+    re.compile(r"\b(?:status|queue|packet|preflight|worker|gate)\s*[:=]\s*\S+", re.I),
+    re.compile(r"\bchapter\s+\d+\b.{0,80}\b(?:failed|blocked|passed|pending|running|stopped|completed)\b", re.I),
+    re.compile(r"\b(?:worker|queue|preflight|gate)\b.{0,80}\b(?:running|idle|failed|blocked|passed|pending|stopped|completed)\b", re.I),
+    re.compile(r"\b(?:artifact|file|path)\b.{0,80}\b(?:/Users/|missing|found|exists|not found|ACCESS_FAILED)\b", re.I),
 )
 
 
@@ -138,6 +149,12 @@ def validate_ceo_decision_packet(text: str, *, forbidden_actions: bool = True) -
                     "PACKET_INVALID",
                     f"forbidden action recommendation detected: {phrase}",
                 )
+    if not any(pattern.search(body) for pattern in CONCRETE_EVIDENCE_PATTERNS):
+        return PacketValidationResult(
+            False,
+            "PACKET_INVALID",
+            "packet lacks concrete evidence observation",
+        )
     return PacketValidationResult(True, "PACKET_VALID")
 
 

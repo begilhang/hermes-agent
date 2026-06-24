@@ -154,7 +154,7 @@ Current state:
 - BookForge is stopped.
 
 Evidence:
-- `http://127.0.0.1:5012/api/status`
+- `http://127.0.0.1:5012/api/status` — reachable; response reports Chapter 28 failed.
 
 Risks:
 - Chapter 28 context budget is unresolved.

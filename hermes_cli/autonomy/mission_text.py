@@ -34,6 +34,15 @@ def requested_action_text(text: str) -> str:
     "Do not publish/export".
     """
 
+    # hermes_architecture_v1.autonomy owns update-safe boundary parsing.
+    try:
+        from hermes_cli.overlay_loader import load_architecture_overlay
+
+        overlay = load_architecture_overlay("autonomy")
+        return str(overlay.requested_action_text(text))
+    except Exception:
+        pass
+
     raw = text or ""
     lower = raw.lower()
     cut = len(raw)

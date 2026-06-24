@@ -351,6 +351,15 @@ def _looks_like_error_output(content: Any) -> bool:
 
 def _is_route_preflight_goal(goal: str) -> bool:
     """Return True when a delegated child should prove its route, not ask an LLM."""
+    # hermes_architecture_v1.delegation_policy owns update-safe delegation gates.
+    try:
+        from hermes_cli.overlay_loader import load_architecture_overlay
+
+        overlay = load_architecture_overlay("delegation_policy")
+        return bool(overlay.is_route_preflight_only(goal))
+    except Exception:
+        pass
+
     text = (goal or "").strip().upper()
     if not text:
         return False
@@ -358,9 +367,15 @@ def _is_route_preflight_goal(goal: str) -> bool:
 
 
 def _is_autonomous_mission_goal(goal: str) -> bool:
-    from hermes_cli.autonomy.detection import is_autonomous_mission_prompt
+    try:
+        from hermes_cli.overlay_loader import load_architecture_overlay
 
-    return is_autonomous_mission_prompt(goal)
+        overlay = load_architecture_overlay("autonomy")
+        return bool(overlay.is_autonomous_mission_prompt(goal))
+    except Exception:
+        from hermes_cli.autonomy.detection import is_autonomous_mission_prompt
+
+        return is_autonomous_mission_prompt(goal)
 
 
 def _delegation_fallback_chain(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1707,13 +1722,21 @@ def _run_single_child(
 
     if _is_autonomous_mission_goal(goal):
         try:
-            from hermes_cli.autonomy.mission_runner import AutonomousMissionRunner
+            from hermes_cli.overlay_loader import load_architecture_overlay
 
-            summary = AutonomousMissionRunner(goal).run()
+            overlay_autonomy = load_architecture_overlay("autonomy")
+            summary = overlay_autonomy.maybe_run_autonomous_mission(
+                goal,
+                surface="delegate_task",
+            )
+            if summary is None:
+                from hermes_cli.autonomy.mission_runner import AutonomousMissionRunner
+
+                summary = AutonomousMissionRunner(goal).run()
             return {
                 "task_index": task_index,
                 "status": "completed",
-                "summary": summary,
+                "summary": str(summary),
                 "api_calls": 0,
                 "duration_seconds": round(time.monotonic() - child_start, 2),
                 "model": getattr(child, "model", None) if child is not None else None,

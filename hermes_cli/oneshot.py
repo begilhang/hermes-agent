@@ -52,9 +52,15 @@ def _is_packet_scoped_prompt(prompt: str) -> bool:
 
 
 def _is_autonomous_mission_prompt(prompt: str) -> bool:
-    from hermes_cli.autonomy.detection import is_autonomous_mission_prompt
+    try:
+        from hermes_cli.overlay_loader import load_architecture_overlay
 
-    return is_autonomous_mission_prompt(prompt)
+        overlay = load_architecture_overlay("autonomy")
+        return bool(overlay.is_autonomous_mission_prompt(prompt))
+    except Exception:
+        from hermes_cli.autonomy.detection import is_autonomous_mission_prompt
+
+        return is_autonomous_mission_prompt(prompt)
 
 
 def _configured_max_iterations(config: dict, prompt: str) -> int:
@@ -219,6 +225,17 @@ def run_oneshot(
 
         sys.stdout.write(build_route_preflight_packet(load_config(), surface="cli"))
         sys.stdout.write("\n")
+        sys.stdout.flush()
+        return 0
+    try:
+        from hermes_cli.overlay_loader import load_architecture_overlay
+
+        overlay_autonomy = load_architecture_overlay("autonomy")
+        handled = overlay_autonomy.maybe_run_autonomous_mission(prompt, surface="oneshot")
+    except Exception:
+        handled = None
+    if handled is not None:
+        sys.stdout.write(str(handled))
         sys.stdout.flush()
         return 0
     if _is_autonomous_mission_prompt(prompt):

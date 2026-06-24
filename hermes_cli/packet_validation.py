@@ -114,10 +114,21 @@ def validate_ceo_decision_packet(text: str, *, forbidden_actions: bool = True) -
     try:
         parsed = json.loads(body)
         if isinstance(parsed, dict) and "route_gate" in parsed:
+            try:
+                from hermes_cli.overlay_loader import load_architecture_overlay
+
+                overlay = load_architecture_overlay("packet_gate")
+                gate_result = overlay.validate_packet_mode(
+                    body,
+                    goal="CEO_DECISION_PACKET",
+                )
+                reason = gate_result.get("reason")
+            except Exception:
+                reason = "route preflight JSON returned instead of CEO_DECISION_PACKET"
             return PacketValidationResult(
                 False,
                 "PACKET_INVALID",
-                "route preflight JSON returned instead of CEO_DECISION_PACKET",
+                reason or "route preflight JSON returned instead of CEO_DECISION_PACKET",
             )
     except Exception:
         pass

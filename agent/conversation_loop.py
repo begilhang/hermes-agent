@@ -523,6 +523,23 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
+    try:
+        from hermes_cli.overlay_loader import load_architecture_overlay
+
+        overlay_autonomy = load_architecture_overlay("autonomy")
+        handled = overlay_autonomy.maybe_run_autonomous_mission(
+            user_message,
+            surface="conversation_loop",
+        )
+    except Exception:
+        handled = None
+    if handled is not None:
+        if stream_callback:
+            try:
+                stream_callback(handled["final_response"])
+            except Exception:
+                logger.debug("autonomous mission stream_callback failed", exc_info=True)
+        return handled
     from hermes_cli.autonomy.detection import is_autonomous_mission_prompt
 
     if is_autonomous_mission_prompt(user_message):

@@ -58,6 +58,15 @@ def _effective_base_url(config: dict[str, Any], model_cfg: dict[str, Any], provi
 
 
 def _looks_like_openrouter_route(provider: str, base_url: str, model: str) -> bool:
+    # hermes_architecture_v1.route_preflight owns update-safe route policy.
+    try:
+        from hermes_cli.overlay_loader import load_architecture_overlay
+
+        overlay = load_architecture_overlay("route_preflight")
+        return bool(overlay.looks_like_openrouter_route(provider, base_url, model))
+    except Exception:
+        pass
+
     provider_l = (provider or "").strip().lower()
     base_l = (base_url or "").strip().lower()
     model_l = (model or "").strip().lower()
@@ -68,6 +77,14 @@ def _looks_like_openrouter_route(provider: str, base_url: str, model: str) -> bo
 
 
 def _openrouter_auth_available(config: dict[str, Any] | None = None) -> bool:
+    try:
+        from hermes_cli.overlay_loader import load_architecture_overlay
+
+        overlay = load_architecture_overlay("route_preflight")
+        return bool(overlay.openrouter_auth_available(config))
+    except Exception:
+        pass
+
     config = config or {}
     model_cfg = _model_cfg(config)
     provider_cfg = _provider_cfg(config, "openrouter")
@@ -144,11 +161,21 @@ def build_route_preflight_packet_for_route(
     effective_model = str(effective_model or "").strip()
     effective_provider = str(effective_provider or "").strip()
     effective_base_url = str(effective_base_url or "").strip().rstrip("/")
-    if (
-        effective_provider.strip().lower() in {"custom", ""}
-        and _looks_like_openrouter_route(effective_provider, effective_base_url, effective_model)
-    ):
-        effective_provider = "openrouter"
+    try:
+        from hermes_cli.overlay_loader import load_architecture_overlay
+
+        overlay = load_architecture_overlay("route_preflight")
+        effective_provider = overlay.normalize_provider_label(
+            effective_provider,
+            effective_base_url,
+            effective_model,
+        )
+    except Exception:
+        if (
+            effective_provider.strip().lower() in {"custom", ""}
+            and _looks_like_openrouter_route(effective_provider, effective_base_url, effective_model)
+        ):
+            effective_provider = "openrouter"
     surface = str(surface or "unknown").strip() or "unknown"
     fallback_entries = list(fallback_entries or [])
     fallback_chain = [_fallback_label(entry) for entry in fallback_entries]

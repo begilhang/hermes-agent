@@ -9,6 +9,19 @@ def build_omlx_runtime_state(
     requested_route_model: str = "",
     models: dict[str, Any] | list[Any] | None = None,
 ) -> dict[str, Any]:
+    # hermes_architecture_v1.omlx_state owns update-safe oMLX reporting.
+    try:
+        from hermes_cli.overlay_loader import load_architecture_overlay
+
+        overlay = load_architecture_overlay("omlx_state")
+        return overlay.build_omlx_runtime_state(
+            health=health,
+            requested_route_model=requested_route_model,
+            models=models,
+        )
+    except Exception:
+        pass
+
     health = health if isinstance(health, dict) else {}
     pool = health.get("engine_pool") if isinstance(health.get("engine_pool"), dict) else {}
     configured_default = str(health.get("default_model") or "").strip()
@@ -74,4 +87,3 @@ def _mismatch_possible(
     if requested_route_model and loaded_model and requested_route_model != loaded_model:
         return True
     return False
-

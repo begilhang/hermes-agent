@@ -234,6 +234,22 @@ class AutonomousMissionRunner:
             )
             self.evidence.append(f"BookForge cap source inspection: ACCESS_FAILED ({root} missing)")
             return []
+        # hermes_architecture_v1.bookforge_diagnostics owns update-safe source discovery.
+        try:
+            from hermes_cli.overlay_loader import load_architecture_overlay
+
+            overlay = load_architecture_overlay("bookforge_diagnostics")
+            hits = list(overlay.find_context_cap_sources(root, limit=8))
+            for hit in hits:
+                self.evidence_ledger.append(str(root), "reachable", f"context cap candidate: {hit}")
+            if hits:
+                self.evidence.append("BookForge context cap source candidates: " + "; ".join(hits[:4]))
+            else:
+                self.evidence.append("BookForge context cap source candidates: ACCESS_FAILED/none found")
+            return hits
+        except Exception:
+            pass
+
         needles = ("24576", "ContextBudgetExceeded", "context window", "publish-readiness", "publish_readiness")
         hits: list[str] = []
         for path in _iter_candidate_source_files(root):

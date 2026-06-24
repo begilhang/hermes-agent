@@ -47,6 +47,33 @@ def test_action_classifier_quarantines_external_and_risk_actions():
     assert secret.decision is AutonomyDecision.QUARANTINE
 
 
+def test_action_classifier_ignores_forbidden_section_as_requested_action():
+    contract = default_contract()
+    mission = """Goal:
+Fix BookForge Chapter 28 context-budget failure.
+
+Forbidden:
+- Do not resume generation.
+- Do not publish/export.
+- Do not accept risk.
+"""
+
+    action = classify_action(mission, contract, mission_goal=mission)
+
+    assert action.decision is AutonomyDecision.AUTO
+
+
+def test_action_classifier_quarantines_affirmative_publish_request():
+    contract = default_contract()
+    action = classify_action(
+        "Fix BookForge Chapter 28 and publish/export when done.",
+        contract,
+        mission_goal="Fix BookForge Chapter 28 and publish/export when done.",
+    )
+
+    assert action.decision is AutonomyDecision.QUARANTINE
+
+
 def test_action_classifier_quarantines_chapter_15_unless_explicitly_included():
     contract = default_contract()
 

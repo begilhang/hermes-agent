@@ -52,13 +52,9 @@ def _is_packet_scoped_prompt(prompt: str) -> bool:
 
 
 def _is_autonomous_mission_prompt(prompt: str) -> bool:
-    text = (prompt or "").lower()
-    return (
-        text.strip().startswith("autonomous_mission:")
-        or "autonomous mode" in text
-        or "return final report only" in text
-        or "final_report_only" in text
-    )
+    from hermes_cli.autonomy.detection import is_autonomous_mission_prompt
+
+    return is_autonomous_mission_prompt(prompt)
 
 
 def _configured_max_iterations(config: dict, prompt: str) -> int:

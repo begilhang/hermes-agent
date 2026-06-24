@@ -135,6 +135,7 @@ class AutonomousMissionRunner:
         self.evidence.append("route_preflight: PASS; mission continued automatically.")
 
     def _run_bookforge_chapter_28_diagnosis(self) -> None:
+        prose_snapshots = self._capture_prose_snapshots()
         status = self._read_json_source(BOOKFORGE_STATUS_URL, "BookForge /api/status")
         queue = self._read_json_source(BOOKFORGE_QUEUE_URL, "BookForge /api/queue")
         self._read_text_source(CANONICAL_START_NOTE, "canonical Obsidian start note")
@@ -153,20 +154,25 @@ class AutonomousMissionRunner:
 
         context_msg = _extract_context_budget_message(status, queue)
         gate_summary = _extract_ai_reader_summary(chapter_item)
+        cap_sources = self._inspect_context_cap_sources()
         self.actions.extend(
             [
                 "Diagnosed BookForge Chapter 28 queue/status state.",
                 "Inspected context-budget failure evidence.",
                 "Inspected AI Reader review gate evidence when path was available.",
+                "Inspected BookForge engine/config code for context-budget cap source.",
                 "Produced non-mutating repair plan; no generation, resume, prose repair, or mutation performed.",
             ]
         )
         self.repairs.append("No repair executed; mission is diagnosis/planning unless engine/config repair is explicitly in envelope.")
         self.verification.append("Confirmed BookForge worker is idle or not running before planning output.")
+        self._verify_prose_snapshots(prose_snapshots)
+        source_summary = "; ".join(cap_sources[:4]) if cap_sources else "cap source not found"
         self.current_state = (
             "BookForge Chapter 28 remains blocked. "
             f"Context-budget evidence: {context_msg or 'not found'}. "
-            f"AI Reader gate: {gate_summary or 'not found'}."
+            f"AI Reader gate: {gate_summary or 'not found'}. "
+            f"Context cap source: {source_summary}."
         )
         self.next_recommended_mission = (
             "Run a bounded engine context-budget fix mission that uses excerpted/summary context for publish-readiness audit, "
@@ -213,6 +219,78 @@ class AutonomousMissionRunner:
         if "blocked" in self.current_state.lower() or "failed" in self.current_state.lower():
             return "REPAIR"
         return "PASS"
+
+    def _inspect_context_cap_sources(self) -> list[str]:
+        root = Path(BOOKFORGE_REPO_ROOT)
+        if not root.exists():
+            self.evidence_ledger.append(
+                str(root),
+                "ACCESS_FAILED",
+                "BookForge repo root does not exist; cannot inspect context cap source.",
+            )
+            self.evidence.append(f"BookForge cap source inspection: ACCESS_FAILED ({root} missing)")
+            return []
+        needles = ("24576", "ContextBudgetExceeded", "context window", "publish-readiness", "publish_readiness")
+        hits: list[str] = []
+        for path in _iter_candidate_source_files(root):
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            matched = [needle for needle in needles if needle.lower() in text.lower()]
+            if not matched:
+                continue
+            rel = str(path.relative_to(root))
+            line_bits = _first_matching_lines(text, matched)
+            hit = f"{rel} ({', '.join(matched)}{'; ' + line_bits if line_bits else ''})"
+            hits.append(hit)
+            self.evidence_ledger.append(str(path), "reachable", f"context cap candidate: {hit}")
+            if len(hits) >= 8:
+                break
+        hits.sort(key=_context_cap_hit_rank)
+        if hits:
+            self.evidence.append("BookForge context cap source candidates: " + "; ".join(hits[:4]))
+        else:
+            self.evidence.append("BookForge context cap source candidates: ACCESS_FAILED/none found")
+        return hits
+
+    def _capture_prose_snapshots(self) -> dict[str, str]:
+        project = Path(BOOKFORGE_PROJECT_ROOT)
+        candidates = [
+            project / "chapters" / "chapter_28.md",
+            project / "chapters" / "chapter_28.draft.md",
+            project / "chapters" / "chapter_15.md",
+            project / "chapters" / "chapter_15.draft.md",
+        ]
+        snapshots: dict[str, str] = {}
+        for path in candidates:
+            if path.exists():
+                try:
+                    snapshots[str(path)] = path.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+        return snapshots
+
+    def _verify_prose_snapshots(self, snapshots: dict[str, str]) -> None:
+        labels = {"chapter_28": "Chapter 28 prose", "chapter_15": "Chapter 15 prose"}
+        seen = {key: False for key in labels}
+        for raw_path, before in snapshots.items():
+            path = Path(raw_path)
+            try:
+                after = path.read_text(encoding="utf-8")
+            except Exception as exc:
+                self.verification.append(f"{path.name} prose check unavailable: {exc}")
+                continue
+            for key, label in labels.items():
+                if key in path.name:
+                    seen[key] = True
+                    if after == before:
+                        self.verification.append(f"{label} unchanged.")
+                    else:
+                        self.verification.append(f"{label} CHANGED unexpectedly.")
+        for key, label in labels.items():
+            if not seen[key]:
+                self.verification.append(f"{label} check skipped; file not found.")
 
 
 def _clean_goal(goal: str) -> str:
@@ -318,3 +396,53 @@ def _json_observation(label: str, data: Any) -> str:
     if "counts" in data:
         return f"counts={data.get('counts')}; attention={data.get('attention')}"
     return f"keys={sorted(data.keys())[:8]}"
+
+
+def _iter_candidate_source_files(root: Path):
+    skip_parts = {
+        ".git",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        "node_modules",
+        "docs",
+        "projects",
+    }
+    suffixes = {".py", ".yaml", ".yml", ".toml"}
+    paths = sorted(
+        root.rglob("*"),
+        key=lambda p: (
+            0 if p.suffix.lower() == ".py" else 1,
+            0 if "bookforge" in p.parts else 1,
+            str(p),
+        ),
+    )
+    for path in paths:
+        if not path.is_file():
+            continue
+        if skip_parts.intersection(path.parts):
+            continue
+        if path.suffix.lower() not in suffixes:
+            continue
+        yield path
+
+
+def _first_matching_lines(text: str, needles: list[str]) -> str:
+    found: list[str] = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        line_l = line.lower()
+        if any(needle.lower() in line_l for needle in needles):
+            found.append(f"L{lineno}: {line.strip()[:80]}")
+        if len(found) >= 2:
+            break
+    return " | ".join(found)
+
+
+def _context_cap_hit_rank(hit: str) -> tuple[int, int, int, str]:
+    return (
+        0 if "24576" in hit else 1,
+        0 if "ContextBudgetExceeded" in hit else 1,
+        0 if "bookforge/core/" in hit else 1,
+        hit,
+    )

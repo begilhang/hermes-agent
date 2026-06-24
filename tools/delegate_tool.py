@@ -358,13 +358,9 @@ def _is_route_preflight_goal(goal: str) -> bool:
 
 
 def _is_autonomous_mission_goal(goal: str) -> bool:
-    text = (goal or "").lower()
-    return (
-        text.strip().startswith("autonomous_mission:")
-        or "autonomous mode" in text
-        or "return final report only" in text
-        or "final_report_only" in text
-    )
+    from hermes_cli.autonomy.detection import is_autonomous_mission_prompt
+
+    return is_autonomous_mission_prompt(goal)
 
 
 def _delegation_fallback_chain(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:

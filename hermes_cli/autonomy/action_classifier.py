@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .policy import AutonomyContract, AutonomyDecision
+from .mission_text import requested_action_text
 
 
 @dataclass(frozen=True)
@@ -19,9 +20,9 @@ def classify_action(
     *,
     mission_goal: str = "",
 ) -> ClassifiedAction:
-    text = (action or "").strip()
+    text = requested_action_text(action or "")
     lower = text.lower()
-    goal_l = (mission_goal or "").lower()
+    goal_l = requested_action_text(mission_goal or "").lower()
 
     if _is_external_or_irreversible(lower):
         return ClassifiedAction(

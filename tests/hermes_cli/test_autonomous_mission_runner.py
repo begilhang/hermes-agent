@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import hermes_cli.autonomy.mission_runner as mission_runner_mod
 from hermes_cli.autonomy.mission_runner import AutonomousMissionRunner
 
 
@@ -109,3 +110,49 @@ def test_self_prompts_and_evidence_ledgers_are_written(tmp_path):
     assert (run_dir / "self_prompts" / "001_route_preflight.md").exists()
     assert (run_dir / "self_prompts" / "008_final_report.md").exists()
     assert (run_dir / "evidence" / "evidence.jsonl").exists()
+
+
+def test_chapter_28_fix_mission_locates_context_cap_source_and_preserves_prose(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "Bookforge V2 PublicationForge"
+    code = repo / "bookforge" / "quality"
+    code.mkdir(parents=True)
+    cap_file = code / "publish_readiness_audit.py"
+    cap_file.write_text(
+        "class ContextBudgetExceeded(Exception):\n"
+        "    pass\n\n"
+        "PUBLISH_READINESS_CONTEXT_LIMIT = 24576\n",
+        encoding="utf-8",
+    )
+    chapters = repo / "projects" / "the_black_beacon_directive" / "chapters"
+    chapters.mkdir(parents=True)
+    ch28 = chapters / "chapter_28.md"
+    ch15 = chapters / "chapter_15.draft.md"
+    ch28.write_text("chapter 28 prose", encoding="utf-8")
+    ch15.write_text("chapter 15 prose", encoding="utf-8")
+    before = {str(ch28): ch28.read_text(), str(ch15): ch15.read_text()}
+
+    monkeypatch.setattr(mission_runner_mod, "BOOKFORGE_REPO_ROOT", str(repo))
+    monkeypatch.setattr(
+        mission_runner_mod,
+        "BOOKFORGE_PROJECT_ROOT",
+        str(repo / "projects" / "the_black_beacon_directive"),
+    )
+
+    runner = AutonomousMissionRunner(
+        "AUTONOMOUS_MISSION: Fix BookForge Chapter 28 context-budget failure. "
+        "Patch BookForge engine/config only if bounded and backed up. "
+        "Do not rewrite Chapter 28 prose. Do not mutate Chapter 15. Return final report only.",
+        run_root=tmp_path / "runs",
+        sources=FakeSources(),
+    )
+
+    report = runner.run()
+
+    assert "publish_readiness_audit.py" in report
+    assert "24576" in report
+    assert "Chapter 28 prose unchanged" in report
+    assert "Chapter 15 prose unchanged" in report
+    assert ch28.read_text() == before[str(ch28)]
+    assert ch15.read_text() == before[str(ch15)]

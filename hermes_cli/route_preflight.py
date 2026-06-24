@@ -57,6 +57,28 @@ def _effective_base_url(config: dict[str, Any], model_cfg: dict[str, Any], provi
     return ""
 
 
+def _looks_like_openrouter_route(provider: str, base_url: str, model: str) -> bool:
+    provider_l = (provider or "").strip().lower()
+    base_l = (base_url or "").strip().lower()
+    model_l = (model or "").strip().lower()
+    return (
+        provider_l == "openrouter"
+        or ("openrouter.ai/api" in base_l and "deepseek" in model_l)
+    )
+
+
+def _openrouter_auth_available(config: dict[str, Any] | None = None) -> bool:
+    config = config or {}
+    model_cfg = _model_cfg(config)
+    provider_cfg = _provider_cfg(config, "openrouter")
+    candidates = [
+        model_cfg.get("api_key"),
+        provider_cfg.get("api_key"),
+        os.getenv("OPENROUTER_API_KEY"),
+    ]
+    return any(isinstance(value, str) and value.strip() for value in candidates)
+
+
 def _fallback_label(entry: dict[str, Any]) -> str:
     provider = str(entry.get("provider") or "").strip().lower()
     model = str(entry.get("model") or "").strip().lower()
@@ -122,6 +144,11 @@ def build_route_preflight_packet_for_route(
     effective_model = str(effective_model or "").strip()
     effective_provider = str(effective_provider or "").strip()
     effective_base_url = str(effective_base_url or "").strip().rstrip("/")
+    if (
+        effective_provider.strip().lower() in {"custom", ""}
+        and _looks_like_openrouter_route(effective_provider, effective_base_url, effective_model)
+    ):
+        effective_provider = "openrouter"
     surface = str(surface or "unknown").strip() or "unknown"
     fallback_entries = list(fallback_entries or [])
     fallback_chain = [_fallback_label(entry) for entry in fallback_entries]
@@ -183,11 +210,17 @@ def build_route_preflight_packet(config: dict[str, Any] | None, *, surface: str 
     config = config or {}
     model_cfg = _model_cfg(config)
     effective_provider = str(model_cfg.get("provider") or "").strip()
+    effective_model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+    effective_base_url = _effective_base_url(config, model_cfg, effective_provider)
+    if _looks_like_openrouter_route(effective_provider, effective_base_url, effective_model):
+        effective_provider = "openrouter"
+        if not _openrouter_auth_available(config):
+            return _route_fail("OPENROUTER_AUTH_MISSING", surface=surface)
     return build_route_preflight_packet_for_route(
         effective_profile=_profile_name(),
-        effective_model=str(model_cfg.get("default") or model_cfg.get("model") or "").strip(),
+        effective_model=effective_model,
         effective_provider=effective_provider,
-        effective_base_url=_effective_base_url(config, model_cfg, effective_provider),
+        effective_base_url=effective_base_url,
         fallback_entries=get_fallback_chain(config),
         surface=surface,
     )

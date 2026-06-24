@@ -523,6 +523,28 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
+    from hermes_cli.autonomy.detection import is_autonomous_mission_prompt
+
+    if is_autonomous_mission_prompt(user_message):
+        from hermes_cli.autonomy.mission_runner import AutonomousMissionRunner
+
+        final_response = AutonomousMissionRunner(user_message).run()
+        if stream_callback:
+            try:
+                stream_callback(final_response)
+            except Exception:
+                logger.debug("autonomous mission stream_callback failed", exc_info=True)
+        return {
+            "completed": True,
+            "final_response": final_response,
+            "messages": [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": final_response},
+            ],
+            "api_calls": 0,
+            "exit_reason": "autonomous_mission",
+        }
+
     if (user_message or "").strip().upper().startswith("ROUTE_PREFLIGHT_ONLY"):
         from hermes_cli.fallback_config import get_fallback_chain
         from hermes_cli.route_preflight import build_route_preflight_packet_for_route

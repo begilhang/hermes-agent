@@ -364,7 +364,16 @@ def _claim_active_session_slot(
     surface: str = "tui",
 ) -> tuple[Any, str | None]:
     try:
-        from hermes_cli.active_sessions import try_acquire_active_session
+        from hermes_cli.active_sessions import (
+            reconcile_active_sessions,
+            try_acquire_active_session,
+        )
+
+        with _sessions_lock:
+            live_ids = set(_sessions.keys())
+        if live_session_id:
+            live_ids.add(live_session_id)
+        reconcile_active_sessions(live_session_ids=live_ids)
 
         return try_acquire_active_session(
             session_id=session_key,
@@ -588,6 +597,26 @@ def _attach_worker(sid: str, session: dict, worker) -> None:
     with _sessions_lock:
         if _sessions.get(sid) is session:
             session["slash_worker"] = worker
+            lease = session.get("active_session_lease")
+            if lease is not None:
+                try:
+                    from hermes_cli.active_sessions import update_active_session
+
+                    proc = getattr(worker, "proc", None)
+                    metadata = {"live_session_id": sid}
+                    if proc is not None:
+                        metadata["worker_pid"] = getattr(proc, "pid", None)
+                        try:
+                            import psutil  # type: ignore
+
+                            metadata["worker_process_start_time"] = float(
+                                psutil.Process(proc.pid).create_time()
+                            )
+                        except Exception:
+                            metadata["worker_process_start_time"] = None
+                    update_active_session(lease, metadata=metadata)
+                except Exception:
+                    logger.debug("Failed to refresh active session worker metadata", exc_info=True)
             return
     worker.close()
 

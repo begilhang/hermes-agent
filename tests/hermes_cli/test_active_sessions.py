@@ -338,3 +338,152 @@ def test_pid_start_time_mismatch_prunes_reused_pid(tmp_path, monkeypatch):
         "new-session"
     ]
     lease.release()
+
+
+def test_stale_tui_lease_without_worker_is_reclaimed(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+    monkeypatch.setattr(active_sessions, "_process_start_time", lambda _pid: 100.0)
+    monkeypatch.setattr(active_sessions, "_TUI_ORPHAN_LEASE_TTL_S", 30.0)
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True)
+    active_sessions._write_entries(
+        runtime / "active_sessions.json",
+        [
+            {
+                "lease_id": "stale-tui",
+                "session_id": "stale-session",
+                "surface": "tui",
+                "pid": os.getpid(),
+                "process_start_time": 100.0,
+                "started_at": 1,
+                "updated_at": 1,
+                "metadata": {"live_session_id": "ui-stale"},
+            }
+        ],
+    )
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="new-session",
+        surface="tui",
+        config={"max_concurrent_sessions": 1},
+        metadata={"live_session_id": "ui-new"},
+    )
+
+    assert message is None
+    assert lease is not None
+    assert [entry["session_id"] for entry in active_sessions.active_session_registry_snapshot()] == [
+        "new-session"
+    ]
+    lease.release()
+
+
+def test_fresh_tui_lease_without_worker_still_blocks(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+    monkeypatch.setattr(active_sessions, "_process_start_time", lambda _pid: 100.0)
+    monkeypatch.setattr(active_sessions, "_TUI_ORPHAN_LEASE_TTL_S", 300.0)
+    now = time.time()
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True)
+    active_sessions._write_entries(
+        runtime / "active_sessions.json",
+        [
+            {
+                "lease_id": "fresh-tui",
+                "session_id": "fresh-session",
+                "surface": "tui",
+                "pid": os.getpid(),
+                "process_start_time": 100.0,
+                "started_at": now,
+                "updated_at": now,
+                "metadata": {"live_session_id": "ui-fresh"},
+            }
+        ],
+    )
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="new-session",
+        surface="tui",
+        config={"max_concurrent_sessions": 1},
+        metadata={"live_session_id": "ui-new"},
+    )
+
+    assert lease is None
+    assert message == (
+        "Hermes is at the active session limit (1/1). "
+        "Try again when another session finishes."
+    )
+
+
+def test_tui_lease_with_dead_worker_is_reclaimed(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def _pid_exists(pid):
+        return int(pid) != 424242
+
+    monkeypatch.setattr("gateway.status._pid_exists", _pid_exists)
+    monkeypatch.setattr(active_sessions, "_process_start_time", lambda _pid: 100.0)
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True)
+    active_sessions._write_entries(
+        runtime / "active_sessions.json",
+        [
+            {
+                "lease_id": "dead-worker",
+                "session_id": "stale-session",
+                "surface": "tui",
+                "pid": os.getpid(),
+                "process_start_time": 100.0,
+                "started_at": time.time(),
+                "updated_at": time.time(),
+                "metadata": {
+                    "live_session_id": "ui-stale",
+                    "worker_pid": 424242,
+                },
+            }
+        ],
+    )
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="new-session",
+        surface="tui",
+        config={"max_concurrent_sessions": 1},
+        metadata={"live_session_id": "ui-new"},
+    )
+
+    assert message is None
+    assert lease is not None
+    lease.release()
+
+
+def test_reconcile_active_sessions_prunes_missing_live_session_id(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+    monkeypatch.setattr(active_sessions, "_process_start_time", lambda _pid: 100.0)
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True)
+    active_sessions._write_entries(
+        runtime / "active_sessions.json",
+        [
+            {
+                "lease_id": "missing-live-session",
+                "session_id": "stale-session",
+                "surface": "tui",
+                "pid": os.getpid(),
+                "process_start_time": 100.0,
+                "started_at": time.time(),
+                "updated_at": time.time(),
+                "metadata": {"live_session_id": "ui-missing"},
+            }
+        ],
+    )
+
+    removed = active_sessions.reconcile_active_sessions(live_session_ids={"ui-other"})
+
+    assert removed == 1
+    assert active_sessions.active_session_registry_snapshot() == []

@@ -20,6 +20,14 @@ from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
+try:
+    _TUI_ORPHAN_LEASE_TTL_S = float(
+        os.environ.get("HERMES_TUI_ORPHAN_LEASE_TTL_S") or 300
+    )
+except (TypeError, ValueError):
+    _TUI_ORPHAN_LEASE_TTL_S = 300.0
+_TUI_ORPHAN_LEASE_TTL_S = max(30.0, _TUI_ORPHAN_LEASE_TTL_S)
+
 
 def coerce_max_concurrent_sessions(value: Any, key: str = "max_concurrent_sessions") -> Optional[int]:
     """Return a positive integer cap, or None when disabled/invalid."""
@@ -209,12 +217,71 @@ def _pid_alive(pid: Any, process_start_time: Any = None) -> bool:
     return abs(current_start - expected_start) < 0.001
 
 
-def _prune_dead(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        entry
-        for entry in entries
-        if _pid_alive(entry.get("pid"), entry.get("process_start_time"))
-    ]
+def _live_session_id(entry: dict[str, Any]) -> str:
+    metadata = entry.get("metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    return str(metadata.get("live_session_id") or "")
+
+
+def _tui_surface(entry: dict[str, Any]) -> bool:
+    surface = str(entry.get("surface") or "").lower()
+    return surface in {"tui", "desktop", "dashboard"} or surface.startswith("tui:")
+
+
+def _entry_has_live_worker(entry: dict[str, Any]) -> bool:
+    metadata = entry.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    worker_pid = metadata.get("worker_pid")
+    if worker_pid in (None, ""):
+        return False
+    return _pid_alive(worker_pid, metadata.get("worker_process_start_time"))
+
+
+def _entry_is_stale_tui_orphan(
+    entry: dict[str, Any],
+    *,
+    now: float,
+    live_session_ids: Optional[set[str]] = None,
+) -> bool:
+    if not _tui_surface(entry):
+        return False
+
+    live_session_id = _live_session_id(entry)
+    if live_session_ids is not None and live_session_id:
+        return live_session_id not in live_session_ids
+
+    metadata = entry.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("worker_pid") not in (None, ""):
+        return not _entry_has_live_worker(entry)
+
+    updated_at = _optional_float(entry.get("updated_at"))
+    if updated_at is None:
+        updated_at = _optional_float(entry.get("started_at"))
+    if updated_at is None:
+        return True
+    return (now - updated_at) > _TUI_ORPHAN_LEASE_TTL_S
+
+
+def _prune_dead(
+    entries: list[dict[str, Any]],
+    *,
+    live_session_ids: Optional[set[str]] = None,
+) -> list[dict[str, Any]]:
+    now = time.time()
+    kept: list[dict[str, Any]] = []
+    for entry in entries:
+        if not _pid_alive(entry.get("pid"), entry.get("process_start_time")):
+            continue
+        if _entry_is_stale_tui_orphan(
+            entry,
+            now=now,
+            live_session_ids=live_session_ids,
+        ):
+            continue
+        kept.append(entry)
+    return kept
 
 
 @dataclass
@@ -311,6 +378,46 @@ def release_active_session(lease: ActiveSessionLease) -> None:
         lease.released = True
 
 
+def update_active_session(
+    lease: ActiveSessionLease,
+    *,
+    metadata: Optional[dict[str, Any]] = None,
+) -> bool:
+    """Refresh an active lease and optionally merge metadata.
+
+    TUI/dashboard sessions are owned by a long-lived gateway process, so the
+    registry needs a heartbeat plus child-worker metadata. Otherwise a crashed
+    or closed UI can leave a live gateway PID behind and pin the profile at its
+    active-session limit.
+    """
+    if lease.released:
+        return False
+    if not lease.enabled:
+        return True
+
+    state_path = _state_path()
+    with _FileLock(_lock_path()):
+        entries = _prune_dead(_read_entries(state_path))
+        updated = False
+        for entry in entries:
+            if str(entry.get("lease_id") or "") != lease.lease_id:
+                continue
+            entry["updated_at"] = time.time()
+            if metadata:
+                current = entry.get("metadata")
+                if not isinstance(current, dict):
+                    current = {}
+                for key, value in metadata.items():
+                    if isinstance(key, str):
+                        current[str(key)] = value
+                entry["metadata"] = current
+            updated = True
+            break
+        if updated:
+            _write_entries(state_path, entries)
+        return updated
+
+
 def transfer_active_session(
     lease: ActiveSessionLease,
     *,
@@ -346,6 +453,27 @@ def transfer_active_session(
             _write_entries(state_path, entries)
             lease.session_id = new_session_id
         return updated
+
+
+def reconcile_active_sessions(
+    *,
+    live_session_ids: Optional[set[str]] = None,
+) -> int:
+    """Prune stale leases and return the number removed.
+
+    ``live_session_ids`` is supplied by the TUI gateway when it knows the
+    in-memory session ids. This catches the important Desktop case where the
+    gateway process is still alive, but the UI session that claimed the lease
+    has already been closed or reaped.
+    """
+    state_path = _state_path()
+    with _FileLock(_lock_path()):
+        raw_entries = _read_entries(state_path)
+        entries = _prune_dead(raw_entries, live_session_ids=live_session_ids)
+        removed = len(raw_entries) - len(entries)
+        if removed:
+            _write_entries(state_path, entries)
+        return removed
 
 
 def active_session_registry_snapshot() -> list[dict[str, Any]]:

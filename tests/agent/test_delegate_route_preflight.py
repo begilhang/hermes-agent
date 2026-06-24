@@ -56,6 +56,21 @@ class PacketChild:
         pass
 
 
+ROUTE_JSON = json.dumps(
+    {
+        "route_gate": "ROUTE_PASS",
+        "effective_profile": "global_orchestrator",
+        "effective_model": "deepseek/deepseek-v4-flash",
+        "effective_provider": "openrouter",
+        "effective_base_url": "https://openrouter.ai/api/v1",
+        "fallback_chain": ["openrouter_deepseek", "direct_deepseek"],
+        "forbidden_fallback_detected": False,
+        "secrets_printed": False,
+        "surface": "delegate_task",
+    }
+)
+
+
 def test_delegate_route_preflight_returns_packet_without_model_call():
     from tools.delegate_tool import _run_single_child
 
@@ -63,7 +78,7 @@ def test_delegate_route_preflight_returns_packet_without_model_call():
 
     result = _run_single_child(
         0,
-        "Run route preflight only, then stop.",
+        "ROUTE_PREFLIGHT_ONLY. Return only valid JSON.",
         child=child,
         parent_agent=None,
     )
@@ -250,3 +265,95 @@ Decision requested:
     assert result["packet_gate"]["packet_gate"] == "PACKET_VALID"
     assert result["packet_gate"]["repair_attempted"] is True
     assert child.calls[1]["user_message"].startswith("REPAIR_PREVIOUS_INVALID_OUTPUT")
+
+
+def test_delegate_packet_goal_with_route_preflight_text_runs_child_and_repairs_route_json():
+    from tools.delegate_tool import _run_single_child
+
+    valid_packet = """CEO_DECISION_PACKET
+
+Current state:
+- BookForge is stopped.
+
+Evidence:
+- `http://127.0.0.1:5012/api/status` — reachable; response reports Chapter 28 failed.
+
+Risks:
+- Chapter 28 context budget is unresolved.
+
+Recommendation:
+- Read-only context-budget repair planning only.
+
+Decision requested:
+- REQUEST_MORE_EVIDENCE
+"""
+    child = PacketChild(
+        [
+            {
+                "final_response": ROUTE_JSON,
+                "completed": True,
+                "api_calls": 1,
+                "messages": [],
+            },
+            {
+                "final_response": valid_packet,
+                "completed": True,
+                "api_calls": 1,
+                "messages": [],
+            },
+        ]
+    )
+
+    result = _run_single_child(
+        0,
+        "Run route preflight first, then produce CEO_DECISION_PACKET for BookForge Chapter 28 read-only diagnosis.",
+        child=child,
+        parent_agent=None,
+    )
+
+    assert result["status"] == "completed"
+    assert result["exit_reason"] == "completed"
+    assert result["api_calls"] == 2
+    assert result["summary"] == valid_packet
+    assert result["packet_gate"]["packet_gate"] == "PACKET_VALID"
+    assert result["packet_gate"]["repair_attempted"] is True
+    assert len(child.calls) == 2
+    assert child.calls[0]["user_message"].startswith("Run route preflight first")
+    assert "Route preflight is already satisfied" in child.calls[1]["user_message"]
+    assert "Do not return route JSON" in child.calls[1]["user_message"]
+
+
+def test_delegate_packet_goal_fails_closed_when_route_json_repeats_after_repair():
+    from tools.delegate_tool import _run_single_child
+
+    child = PacketChild(
+        [
+            {
+                "final_response": ROUTE_JSON,
+                "completed": True,
+                "api_calls": 1,
+                "messages": [],
+            },
+            {
+                "final_response": ROUTE_JSON,
+                "completed": True,
+                "api_calls": 1,
+                "messages": [],
+            },
+        ]
+    )
+
+    result = _run_single_child(
+        0,
+        "After route preflight, produce CEO_DECISION_PACKET for BookForge Chapter 28 read-only diagnosis.",
+        child=child,
+        parent_agent=None,
+    )
+
+    assert result["status"] == "failed"
+    assert result["exit_reason"] == "packet_invalid"
+    assert result["api_calls"] == 2
+    assert result["summary"] is None
+    assert result["packet_gate"]["packet_gate"] == "PACKET_INVALID"
+    assert result["packet_gate"]["repair_attempted"] is True
+    assert "route preflight JSON" in result["packet_gate"]["reason"]

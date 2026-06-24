@@ -111,6 +111,16 @@ def validate_ceo_decision_packet(text: str, *, forbidden_actions: bool = True) -
     body = (text or "").strip()
     if not body:
         return PacketValidationResult(False, "PACKET_INVALID", "empty packet")
+    try:
+        parsed = json.loads(body)
+        if isinstance(parsed, dict) and "route_gate" in parsed:
+            return PacketValidationResult(
+                False,
+                "PACKET_INVALID",
+                "route preflight JSON returned instead of CEO_DECISION_PACKET",
+            )
+    except Exception:
+        pass
     if not body.startswith("CEO_DECISION_PACKET"):
         return PacketValidationResult(False, "PACKET_INVALID", "packet must start with CEO_DECISION_PACKET")
     lower = body.lower()
@@ -160,10 +170,10 @@ def validate_ceo_decision_packet(text: str, *, forbidden_actions: bool = True) -
 
 def validate_delegated_output(goal: str, summary: str) -> PacketValidationResult:
     goal_l = (goal or "").lower()
-    if "route_preflight_only" in goal_l or "route preflight" in goal_l or "route-preflight" in goal_l:
-        return validate_route_preflight_packet(summary)
     if requires_ceo_decision_packet(goal):
         return validate_ceo_decision_packet(summary)
+    if "route_preflight_only" in goal_l:
+        return validate_route_preflight_packet(summary)
     return PacketValidationResult(True, "NOT_PACKET_SCOPED")
 
 

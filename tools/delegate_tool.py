@@ -350,10 +350,10 @@ def _looks_like_error_output(content: Any) -> bool:
 
 def _is_route_preflight_goal(goal: str) -> bool:
     """Return True when a delegated child should prove its route, not ask an LLM."""
-    text = (goal or "").strip().lower()
+    text = (goal or "").strip().upper()
     if not text:
         return False
-    return "route_preflight_only" in text or "route preflight" in text or "route-preflight" in text
+    return "ROUTE_PREFLIGHT_ONLY" in text
 
 
 def _delegation_fallback_chain(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -427,11 +427,18 @@ def _route_preflight_entry(
 
 def _packet_repair_prompt(goal: str, invalid_summary: str, reason: str) -> str:
     """Return a compact repair prompt for packet-scoped delegated work."""
+    route_json_guidance = ""
+    if "route preflight JSON" in (reason or ""):
+        route_json_guidance = (
+            "Route preflight is already satisfied. Do not return route JSON. "
+            "Produce only CEO_DECISION_PACKET with reachable/ACCESS_FAILED evidence.\n"
+        )
     return (
         "REPAIR_PREVIOUS_INVALID_OUTPUT.\n"
         "Your previous delegated output failed the deterministic packet gate.\n\n"
         f"Original task:\n{goal}\n\n"
         f"Failure reason:\n{reason}\n\n"
+        f"{route_json_guidance}"
         "Return the completed packet only. Do not narrate commands, plans, or intent. "
         "Do not include raw dumps. If evidence is inaccessible, mark it as "
         "ACCESS_FAILED inside the packet with a short reason. Do not recommend "

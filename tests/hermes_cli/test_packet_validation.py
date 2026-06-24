@@ -224,3 +224,62 @@ def test_route_preflight_rejects_pass_with_blank_required_fields():
 def test_delegated_output_only_applies_ceo_packet_gate_when_goal_requests_it():
     assert validate_delegated_output("summarize this", "loose prose").valid is True
     assert validate_delegated_output("Return CEO_DECISION_PACKET only", "loose prose").valid is False
+
+
+def test_route_json_is_valid_only_for_explicit_route_preflight_only_goal():
+    route_json = json.dumps(
+        {
+            "route_gate": "ROUTE_PASS",
+            "effective_profile": "global_orchestrator",
+            "effective_model": "deepseek/deepseek-v4-flash",
+            "effective_provider": "openrouter",
+            "effective_base_url": "https://openrouter.ai/api/v1",
+            "fallback_chain": ["openrouter_deepseek", "direct_deepseek"],
+            "forbidden_fallback_detected": False,
+            "secrets_printed": False,
+            "surface": "delegate_task",
+        }
+    )
+
+    route_result = validate_delegated_output(
+        "ROUTE_PREFLIGHT_ONLY. Return only valid JSON.",
+        route_json,
+    )
+    packet_result = validate_delegated_output(
+        "Run route preflight first, then produce CEO_DECISION_PACKET for BookForge Chapter 28.",
+        route_json,
+    )
+
+    assert route_result.valid is True
+    assert route_result.code == "ROUTE_PACKET_VALID"
+    assert packet_result.valid is False
+    assert packet_result.code == "PACKET_INVALID"
+    assert "route preflight JSON" in packet_result.reason
+
+
+def test_ceo_packet_goal_wins_over_route_preflight_wording():
+    valid_packet = """CEO_DECISION_PACKET
+
+Current state:
+- BookForge is stopped.
+
+Evidence:
+- `http://127.0.0.1:5012/api/status` — reachable; response reports Chapter 28 failed.
+
+Risks:
+- Chapter 28 context budget is unresolved.
+
+Recommendation:
+- Read-only context-budget repair planning only.
+
+Decision requested:
+- REQUEST_MORE_EVIDENCE
+"""
+
+    result = validate_delegated_output(
+        "After route preflight, produce CEO_DECISION_PACKET for Chapter 28.",
+        valid_packet,
+    )
+
+    assert result.valid is True
+    assert result.code == "PACKET_VALID"

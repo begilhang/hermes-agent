@@ -14,8 +14,8 @@ Current state:
 - BookForge is stopped.
 
 Evidence:
-- `/Users/begilhan/Bookforge V2 PublicationForge/docs/runtime/CURRENT_RUNTIME_PACKET.md`
-- `http://127.0.0.1:5012/api/status`
+- `/Users/begilhan/Bookforge V2 PublicationForge/docs/runtime/CURRENT_RUNTIME_PACKET.md` — reachable; packet says worker idle.
+- `http://127.0.0.1:5012/api/status` — reachable; response reports Chapter 28 failed.
 
 Risks:
 - Chapter 28 context budget is unresolved.
@@ -140,6 +140,63 @@ Decision requested:
     assert result.valid is False
     assert result.code == "PACKET_INVALID"
     assert "pending evidence" in result.reason
+
+
+def test_ceo_packet_rejects_citations_without_concrete_observations():
+    packet = """CEO_DECISION_PACKET
+
+Current state:
+- BookForge needs diagnosis.
+
+Evidence:
+- `/Users/begilhan/Documents/Private documents/sharedmemory/Bookforge/00 Current Status/00 START HERE - Current Hermes BookForge Status.md`
+- `http://127.0.0.1:5012/api/status`
+- `http://127.0.0.1:5012/api/queue`
+
+Chapter 28 context-budget diagnosis:
+- Context budget needs analysis.
+
+Risks:
+- unknown
+
+Recommendation:
+- Prepare repair planning later.
+
+Decision requested:
+- REQUEST_MORE_EVIDENCE
+"""
+
+    result = validate_ceo_decision_packet(packet)
+
+    assert result.valid is False
+    assert result.code == "PACKET_INVALID"
+    assert "concrete evidence observation" in result.reason
+
+
+def test_ceo_packet_accepts_access_failed_as_concrete_evidence_status():
+    packet = """CEO_DECISION_PACKET
+
+Current state:
+- BookForge status cannot be fully verified from the worker.
+
+Evidence:
+- `http://127.0.0.1:5012/api/status` — ACCESS_FAILED: local endpoint blocked from worker network boundary.
+- `http://127.0.0.1:5012/api/queue` — ACCESS_FAILED: local endpoint blocked from worker network boundary.
+
+Risks:
+- status remains unverified.
+
+Recommendation:
+- Request narrow host-side status check.
+
+Decision requested:
+- REQUEST_MORE_EVIDENCE
+"""
+
+    result = validate_ceo_decision_packet(packet)
+
+    assert result.valid is True
+    assert result.code == "PACKET_VALID"
 
 
 def test_route_preflight_rejects_pass_with_blank_required_fields():

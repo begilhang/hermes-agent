@@ -283,3 +283,64 @@ Decision requested:
 
     assert result.valid is True
     assert result.code == "PACKET_VALID"
+
+
+def test_chapter_28_diagnosis_rejects_all_access_failed_packet_as_insufficient_evidence():
+    packet = """CEO_DECISION_PACKET
+
+Current state:
+- Chapter 28 diagnosis cannot be established.
+
+Evidence:
+- `/Users/begilhan/Documents/Private documents/sharedmemory/Bookforge/00 START HERE - Current Hermes BookForge Status.md` — ACCESS_FAILED: unavailable.
+- `http://127.0.0.1:5012/api/status` — ACCESS_FAILED: unavailable.
+- `http://127.0.0.1:5012/api/queue` — ACCESS_FAILED: unavailable.
+
+Risks:
+- Diagnosis would be speculative.
+
+Recommendation:
+- Request correct source locations before diagnosis.
+
+Decision requested:
+- REQUEST_MORE_EVIDENCE
+"""
+
+    result = validate_delegated_output(
+        "Produce CEO_DECISION_PACKET for Chapter 28 diagnosis and context-budget repair planning.",
+        packet,
+    )
+
+    assert result.valid is False
+    assert result.code == "PACKET_INSUFFICIENT_EVIDENCE"
+    assert "all evidence sources are ACCESS_FAILED" in result.reason
+
+
+def test_all_access_failed_packet_can_be_valid_when_classified_as_worker_access_failure():
+    packet = """CEO_DECISION_PACKET
+
+Current state:
+- WORKER_ACCESS_FAILURE: the delegated worker could not access any allowed source, so no Chapter 28 diagnosis is made.
+
+Evidence:
+- `/Users/begilhan/Documents/Private documents/sharedmemory/Bookforge/00 START HERE - Current Hermes BookForge Status.md` — ACCESS_FAILED: unavailable.
+- `http://127.0.0.1:5012/api/status` — ACCESS_FAILED: unavailable.
+- `http://127.0.0.1:5012/api/queue` — ACCESS_FAILED: unavailable.
+
+Risks:
+- Diagnosis would be speculative.
+
+Recommendation:
+- Repair worker access before attempting diagnosis or repair planning.
+
+Decision requested:
+- REQUEST_MORE_EVIDENCE
+"""
+
+    result = validate_delegated_output(
+        "Produce CEO_DECISION_PACKET for Chapter 28 diagnosis and context-budget repair planning.",
+        packet,
+    )
+
+    assert result.valid is True
+    assert result.code == "PACKET_VALID"

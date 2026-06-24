@@ -168,10 +168,54 @@ def validate_ceo_decision_packet(text: str, *, forbidden_actions: bool = True) -
     return PacketValidationResult(True, "PACKET_VALID")
 
 
+def _is_all_access_failed_packet(text: str) -> bool:
+    body = text or ""
+    access_failed_count = len(re.findall(r"\bACCESS_FAILED\b", body, flags=re.I))
+    if not access_failed_count:
+        return False
+    evidence_lines = [
+        line
+        for line in body.splitlines()
+        if line.strip().startswith("-") and (
+            "http://127.0.0.1" in line
+            or "/Users/" in line
+            or "ACCESS_FAILED" in line
+        )
+    ]
+    return bool(evidence_lines and access_failed_count >= len(evidence_lines))
+
+
+def _requires_actionable_chapter_28_evidence(goal: str) -> bool:
+    goal_l = (goal or "").lower()
+    return (
+        "chapter 28" in goal_l
+        and (
+            "diagnosis" in goal_l
+            or "context-budget" in goal_l
+            or "context budget" in goal_l
+            or "repair planning" in goal_l
+            or "repair plan" in goal_l
+        )
+    )
+
+
 def validate_delegated_output(goal: str, summary: str) -> PacketValidationResult:
     goal_l = (goal or "").lower()
     if requires_ceo_decision_packet(goal):
-        return validate_ceo_decision_packet(summary)
+        result = validate_ceo_decision_packet(summary)
+        if not result.valid:
+            return result
+        if (
+            _requires_actionable_chapter_28_evidence(goal)
+            and _is_all_access_failed_packet(summary)
+            and "WORKER_ACCESS_FAILURE" not in (summary or "")
+        ):
+            return PacketValidationResult(
+                False,
+                "PACKET_INSUFFICIENT_EVIDENCE",
+                "all evidence sources are ACCESS_FAILED; no diagnosis can be made",
+            )
+        return result
     if "route_preflight_only" in goal_l:
         return validate_route_preflight_packet(summary)
     return PacketValidationResult(True, "NOT_PACKET_SCOPED")

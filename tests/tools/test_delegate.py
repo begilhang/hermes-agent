@@ -11,6 +11,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+from pathlib import Path
 import threading
 import time
 import unittest
@@ -32,6 +33,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _load_target_profile_contract,
 )
 
 
@@ -137,6 +139,116 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertIn("Fix the tests", prompt)
         self.assertIn("CONTEXT", prompt)
         self.assertIn("assertion failed", prompt)
+
+
+class TestTargetProfileHydration(unittest.TestCase):
+    def test_load_target_profile_contract_reads_config_and_soul(self):
+        with unittest.mock.patch("hermes_cli.profiles.get_profile_dir") as mock_profile_dir:
+            import tempfile
+
+            with tempfile.TemporaryDirectory() as tmp:
+                profile_dir = Path(tmp) / "global_orchestrator"
+                profile_dir.mkdir()
+                (profile_dir / "config.yaml").write_text(
+                    "toolsets:\n"
+                    "- terminal\n"
+                    "- file\n"
+                    "- web\n"
+                    "- delegation\n"
+                    "agent:\n"
+                    "  disabled_toolsets:\n"
+                    "  - browser\n"
+                    "bookforge_evidence_sources:\n"
+                    "  api_status: http://127.0.0.1:5012/api/status\n",
+                    encoding="utf-8",
+                )
+                (profile_dir / "SOUL.md").write_text(
+                    "## Global Orchestrator\nUse canonical evidence sources.",
+                    encoding="utf-8",
+                )
+                mock_profile_dir.return_value = profile_dir
+
+                contract = _load_target_profile_contract("global_orchestrator")
+
+        self.assertEqual(
+            contract["toolsets"],
+            ["terminal", "file", "web", "delegation"],
+        )
+        self.assertEqual(contract["disabled_toolsets"], ["browser"])
+        self.assertEqual(
+            contract["bookforge_evidence_sources"]["api_status"],
+            "http://127.0.0.1:5012/api/status",
+        )
+        self.assertIn("Global Orchestrator", contract["soul"])
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_target_profile_toolsets_override_brain_ceo_disabled_tool_boundary(
+        self,
+        mock_agent_cls,
+        mock_load_config,
+    ):
+        mock_load_config.return_value = {
+            "profile": "global_orchestrator",
+            "model": "deepseek/deepseek-v4-flash",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+        }
+        child = MagicMock()
+        child.model = "deepseek/deepseek-v4-flash"
+        child.provider = "openrouter"
+        child.base_url = "https://openrouter.ai/api/v1"
+        mock_agent_cls.return_value = child
+
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["clarify", "delegation"]
+
+        with patch("tools.delegate_tool._load_target_profile_contract") as mock_contract:
+            mock_contract.return_value = {
+                "toolsets": [
+                    "terminal",
+                    "file",
+                    "web",
+                    "skills",
+                    "todo",
+                    "session_search",
+                    "browser",
+                    "computer_use",
+                    "delegation",
+                ],
+                "disabled_toolsets": ["browser", "computer_use"],
+                "soul": "## Hermes Global Orchestrator\nUse canonical evidence sources.",
+                "bookforge_evidence_sources": {
+                    "api_status": "http://127.0.0.1:5012/api/status",
+                    "project_root": "/Users/begilhan/Bookforge V2 PublicationForge/projects/the_black_beacon_directive/",
+                },
+            }
+
+            _build_child_agent(
+                task_index=0,
+                goal="Produce CEO_DECISION_PACKET.",
+                context=None,
+                toolsets=None,
+                model="deepseek/deepseek-v4-flash",
+                max_iterations=12,
+                task_count=1,
+                parent_agent=parent,
+                override_provider="openrouter",
+                override_base_url="https://openrouter.ai/api/v1",
+                role="orchestrator",
+            )
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        self.assertIn("terminal", kwargs["enabled_toolsets"])
+        self.assertIn("file", kwargs["enabled_toolsets"])
+        self.assertIn("web", kwargs["enabled_toolsets"])
+        self.assertIn("skills", kwargs["enabled_toolsets"])
+        self.assertIn("todo", kwargs["enabled_toolsets"])
+        self.assertIn("session_search", kwargs["enabled_toolsets"])
+        self.assertNotIn("browser", kwargs["enabled_toolsets"])
+        self.assertNotIn("computer_use", kwargs["enabled_toolsets"])
+        self.assertIn("Hermes Global Orchestrator", kwargs["ephemeral_system_prompt"])
+        self.assertIn("api_status: http://127.0.0.1:5012/api/status", kwargs["ephemeral_system_prompt"])
 
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")

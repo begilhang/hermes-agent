@@ -28,6 +28,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
@@ -369,6 +370,65 @@ def _delegation_fallback_chain(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
         return get_fallback_chain(cfg)
     except Exception:
         return []
+
+
+def _load_target_profile_contract(profile_name: Optional[str]) -> Dict[str, Any]:
+    """Read a delegated target profile's operating contract.
+
+    A Brain CEO parent may be intentionally tool-minimal. When delegation is
+    configured for a named operating profile, the child should use that target
+    profile's tool contract and instructions rather than inherit the Brain CEO's
+    disabled tool boundary.
+    """
+    name = str(profile_name or "").strip()
+    if not name or name == "delegated_worker":
+        return {}
+    try:
+        from hermes_cli.profiles import get_profile_dir
+    except Exception:
+        return {}
+    try:
+        profile_dir = Path(get_profile_dir(name))
+    except Exception:
+        return {}
+
+    contract: Dict[str, Any] = {
+        "profile": name,
+        "path": str(profile_dir),
+    }
+
+    try:
+        import yaml
+
+        raw = yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8")) or {}
+        if isinstance(raw, dict):
+            toolsets = raw.get("toolsets")
+            if isinstance(toolsets, list):
+                contract["toolsets"] = [str(t) for t in toolsets if str(t).strip()]
+            agent_cfg = raw.get("agent")
+            disabled = agent_cfg.get("disabled_toolsets") if isinstance(agent_cfg, dict) else None
+            if isinstance(disabled, list):
+                contract["disabled_toolsets"] = [
+                    str(t) for t in disabled if str(t).strip()
+                ]
+            evidence_sources = raw.get("bookforge_evidence_sources")
+            if isinstance(evidence_sources, dict):
+                contract["bookforge_evidence_sources"] = {
+                    str(k): str(v)
+                    for k, v in evidence_sources.items()
+                    if str(k).strip() and str(v).strip()
+                }
+    except Exception:
+        pass
+
+    try:
+        soul = (profile_dir / "SOUL.md").read_text(encoding="utf-8").strip()
+        if soul:
+            contract["soul"] = soul[:8000]
+    except Exception:
+        pass
+
+    return contract
 
 
 def _route_preflight_entry(
@@ -771,6 +831,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    target_profile_contract: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -787,6 +848,23 @@ def _build_child_system_prompt(
     ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
+    profile_soul = (target_profile_contract or {}).get("soul")
+    profile_name = (target_profile_contract or {}).get("profile")
+    if profile_soul:
+        parts.append(
+            "\nTARGET PROFILE CONTRACT"
+            + (f" ({profile_name})" if profile_name else "")
+            + f":\n{profile_soul}"
+        )
+    evidence_sources = (target_profile_contract or {}).get("bookforge_evidence_sources")
+    if isinstance(evidence_sources, dict) and evidence_sources:
+        rendered_sources = "\n".join(
+            f"- {key}: {value}" for key, value in sorted(evidence_sources.items())
+        )
+        parts.append(
+            "\nTARGET PROFILE CANONICAL BOOKFORGE EVIDENCE SOURCES:\n"
+            f"{rendered_sources}"
+        )
     if workspace_path and str(workspace_path).strip():
         parts.append(
             "\nWORKSPACE PATH:\n"
@@ -1140,6 +1218,13 @@ def _build_child_agent(
     tui_depth = max(0, child_depth - 1)  # 0 = first-level child for the UI
 
     delegation_cfg = _load_config()
+    target_profile_name = (
+        str(delegation_cfg.get("profile") or delegation_cfg.get("target_profile") or "").strip()
+        or None
+    )
+    target_profile_contract = _load_target_profile_contract(target_profile_name)
+    target_profile_toolsets = target_profile_contract.get("toolsets")
+    target_profile_disabled = set(target_profile_contract.get("disabled_toolsets") or [])
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
@@ -1160,7 +1245,25 @@ def _build_child_agent(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
-    if toolsets:
+    if isinstance(target_profile_toolsets, list) and target_profile_toolsets:
+        target_allowed_toolsets = _strip_blocked_tools(
+            [
+                str(t)
+                for t in target_profile_toolsets
+                if str(t) and str(t) not in target_profile_disabled
+            ]
+        )
+        if toolsets:
+            target_allowed = set(target_allowed_toolsets)
+            child_toolsets = [t for t in toolsets if t in target_allowed]
+            if _get_inherit_mcp_toolsets():
+                child_toolsets = _preserve_parent_mcp_toolsets(
+                    child_toolsets,
+                    set(target_allowed_toolsets),
+                )
+        else:
+            child_toolsets = list(target_allowed_toolsets)
+    elif toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks.
         # Expand composite toolsets (e.g. hermes-cli) so that individual
         # toolset names (e.g. web, terminal) are recognised during intersection.
@@ -1193,6 +1296,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        target_profile_contract=target_profile_contract,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1372,7 +1476,7 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._delegate_route_profile = (
-        str(delegation_cfg.get("profile") or delegation_cfg.get("target_profile") or "delegated_worker").strip()
+        str(target_profile_name or "delegated_worker").strip()
         or "delegated_worker"
     )
     child._delegate_route_model = (
